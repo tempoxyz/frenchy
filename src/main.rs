@@ -586,20 +586,20 @@ fn open_ipmi_url(
         Err(error) if is_ipmi_in_progress_error(&format!("{error:#}")) => {}
         Err(error) => {
             return Err(error)
-                .with_context(|| format!("IPMI access request failed for {service_name}"));
+                .with_context(|| format!("KVM/IPMI access request failed for {service_name}"));
         }
     }
 
     let access = wait_for_ipmi_access(&client, &service_name, &access_type)?;
 
     let Some(url) = access.best_url() else {
-        return Err(anyhow!("IPMI access returned no URL: {}", access.raw));
+        return Err(anyhow!("KVM/IPMI access returned no URL: {}", access.raw));
     };
 
     webbrowser::open(url)
         .with_context(|| format!("could not open browser for {service_name}: {url}"))?;
 
-    Ok(format!("Opened IPMI URL for {service_name}"))
+    Ok(format!("Opened KVM console for {service_name}"))
 }
 
 fn wait_for_ipmi_access(
@@ -615,7 +615,7 @@ fn wait_for_ipmi_access(
                 let message = format!("{error:#}");
                 if !is_ipmi_in_progress_error(&message) {
                     return Err(error).with_context(|| {
-                        format!("failed to read IPMI access URL for {service_name}")
+                        format!("failed to read KVM/IPMI access URL for {service_name}")
                     });
                 }
                 last_error = Some(message);
@@ -625,7 +625,7 @@ fn wait_for_ipmi_access(
     }
 
     Err(anyhow!(
-        "IPMI access URL was not ready after 60s for {service_name}. Last OVH response: {}",
+        "KVM/IPMI access URL was not ready after 60s for {service_name}. Last OVH response: {}",
         last_error.unwrap_or_else(|| "no response".to_string())
     ))
 }
@@ -666,8 +666,10 @@ struct App {
     ipmi_type: String,
     ipmi_ttl: String,
     pending_restart: Option<String>,
+    pending_g: bool,
     filter_mode: bool,
     filter: String,
+    visible_server_rows: usize,
 }
 
 enum AppEvent {
@@ -703,8 +705,10 @@ impl App {
             ipmi_type,
             ipmi_ttl,
             pending_restart: None,
+            pending_g: false,
             filter_mode: false,
             filter: String::new(),
+            visible_server_rows: 8,
         }
     }
 
@@ -750,6 +754,9 @@ impl App {
             return Ok(false);
         }
 
+        let waiting_for_gg = self.pending_g;
+        self.pending_g = false;
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
@@ -759,9 +766,22 @@ impl App {
             }
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Char('R') => self.restart_selected(),
-            KeyCode::Char('i') => self.open_ipmi(),
+            KeyCode::Char('i') | KeyCode::Char('K') => self.open_ipmi(),
             KeyCode::Char('j') | KeyCode::Down => self.next(),
             KeyCode::Char('k') | KeyCode::Up => self.previous(),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => self.next_page(),
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.previous_page()
+            }
+            KeyCode::Char('g') => {
+                if waiting_for_gg {
+                    self.first()
+                } else {
+                    self.pending_g = true;
+                    self.status = "Press g again to jump to the first server".to_string();
+                }
+            }
+            KeyCode::Char('G') => self.last(),
             KeyCode::PageDown => self.detail_scroll = self.detail_scroll.saturating_add(8),
             KeyCode::PageUp => self.detail_scroll = self.detail_scroll.saturating_sub(8),
             KeyCode::Home => self.detail_scroll = 0,
@@ -893,7 +913,7 @@ impl App {
         };
         let service_name = server.service_name.clone();
         self.status = format!(
-            "Requesting {} IPMI access for {service_name}...",
+            "Requesting {} KVM/IPMI access for {service_name}...",
             self.ipmi_type
         );
         let client = self.client.clone();
@@ -938,20 +958,55 @@ impl App {
     }
 
     fn next(&mut self) {
-        if self.filtered_indices.is_empty() {
-            return;
-        }
-        self.selected = (self.selected + 1).min(self.filtered_indices.len() - 1);
-        self.table_state.select(Some(self.selected));
-        self.detail_scroll = 0;
-        self.pending_restart = None;
+        self.next_by(1);
     }
 
     fn previous(&mut self) {
+        self.previous_by(1);
+    }
+
+    fn next_page(&mut self) {
+        self.next_by(self.half_page_rows());
+    }
+
+    fn previous_page(&mut self) {
+        self.previous_by(self.half_page_rows());
+    }
+
+    fn first(&mut self) {
         if self.filtered_indices.is_empty() {
             return;
         }
-        self.selected = self.selected.saturating_sub(1);
+        self.select_server(0);
+    }
+
+    fn last(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        self.select_server(self.filtered_indices.len() - 1);
+    }
+
+    fn next_by(&mut self, amount: usize) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        self.select_server((self.selected + amount).min(self.filtered_indices.len() - 1));
+    }
+
+    fn previous_by(&mut self, amount: usize) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        self.select_server(self.selected.saturating_sub(amount));
+    }
+
+    fn half_page_rows(&self) -> usize {
+        (self.visible_server_rows / 2).max(1)
+    }
+
+    fn select_server(&mut self, selected: usize) {
+        self.selected = selected;
         self.table_state.select(Some(self.selected));
         self.detail_scroll = 0;
         self.pending_restart = None;
@@ -983,7 +1038,7 @@ impl App {
             ),
             Span::raw("  "),
             Span::raw(
-                "/ filter  r refresh  j/k move  tab focus  pgup/pgdn scroll  i open IPMI  R restart  q quit",
+                "/ filter  r refresh  j/k move  ctrl-d/u page  gg/G jump  tab focus  i/K KVM  R restart  q quit",
             ),
         ]);
         frame.render_widget(
@@ -1003,6 +1058,8 @@ impl App {
     }
 
     fn draw_servers(&mut self, frame: &mut Frame, area: Rect) {
+        self.visible_server_rows = usize::from(area.height.saturating_sub(3)).max(1);
+
         let rows = self.filtered_indices.iter().filter_map(|index| {
             let server = self.servers.get(*index)?;
             Row::new(vec![
