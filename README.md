@@ -64,21 +64,23 @@ backspace     edit filter
 ctrl-u        clear filter while filtering
 r             refresh servers
 j/k or arrows move selection
+ctrl-d/ctrl-u move selection by half a page
+gg/G          jump to first/last server
 tab/enter     switch focus
 pgup/pgdn     scroll details
-i             request HTML5 IPMI access and open the returned URL
+i/K           request HTML5 KVM/IPMI access and open the returned URL
 R             press twice to restart the selected server
 q/esc/ctrl-c  quit
 ```
 
-The IPMI action calls:
+The KVM action calls OVH's IPMI access API:
 
 ```text
 POST /dedicated/server/{serviceName}/features/ipmi/access
 GET  /dedicated/server/{serviceName}/features/ipmi/access?type=kvmipHtml5URL
 ```
 
-and opens the returned URL with the system browser.
+and opens the returned HTML5 KVM URL with the system browser.
 
 The restart action calls:
 
