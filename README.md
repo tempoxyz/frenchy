@@ -39,6 +39,8 @@ for IPMI session creation and restarts:
 ```text
 GET  /dedicated/server
 GET  /dedicated/server/*
+GET  /dedicated/server/*/specifications/hardware
+GET  /dedicated/server/*/specifications/network
 POST /dedicated/server/*/features/ipmi/access
 POST /dedicated/server/*/reboot
 ```
@@ -54,6 +56,11 @@ cargo run -- credential-help
 ```sh
 cargo run
 ```
+
+The server list includes an at-a-glance hardware summary. Selecting a server
+shows CPU topology, memory, disk groups, RAID details, motherboard, boot mode,
+bandwidth, routing, vRack/vMAC support, and OLA or virtual network interfaces
+when OVH returns them.
 
 ## Keys
 

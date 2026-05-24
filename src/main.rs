@@ -105,6 +105,8 @@ Create a consumer key from the OVH API console with read access to:
 
   GET /dedicated/server
   GET /dedicated/server/*
+  GET /dedicated/server/*/specifications/hardware
+  GET /dedicated/server/*/specifications/network
 
 and write access to request IPMI sessions and restart servers:
 
@@ -178,6 +180,20 @@ impl OvhClient {
     fn server_details(&self, service_name: &str) -> Result<ServerDetails> {
         let raw: Value = self.get(&format!("/dedicated/server/{}", enc(service_name)))?;
         Ok(serde_json::from_value(raw)?)
+    }
+
+    fn server_hardware(&self, service_name: &str) -> Result<HardwareSpecs> {
+        self.get(&format!(
+            "/dedicated/server/{}/specifications/hardware",
+            enc(service_name)
+        ))
+    }
+
+    fn server_network(&self, service_name: &str) -> Result<NetworkSpecs> {
+        self.get(&format!(
+            "/dedicated/server/{}/specifications/network",
+            enc(service_name)
+        ))
     }
 
     fn reboot_server(&self, service_name: &str) -> Result<Value> {
@@ -424,6 +440,22 @@ struct ServerDetails {
     commercial_range: Option<String>,
     #[serde(default)]
     link_speed: Option<u64>,
+    #[serde(default)]
+    monitoring: Option<bool>,
+    #[serde(default)]
+    power_state: Option<String>,
+    #[serde(default)]
+    root_device: Option<String>,
+    #[serde(default)]
+    support_level: Option<String>,
+    #[serde(default)]
+    vnis: Vec<VirtualNetworkInterface>,
+    #[serde(default)]
+    enabled_public_vnis: Vec<String>,
+    #[serde(default)]
+    enabled_vrack_vnis: Vec<String>,
+    #[serde(default)]
+    enabled_vrack_aggregation_vnis: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -431,6 +463,209 @@ struct ServerDetails {
 struct ServerIam {
     #[serde(default)]
     display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VirtualNetworkInterface {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    uuid: Option<String>,
+    #[serde(default)]
+    vrack: Option<String>,
+    #[serde(default)]
+    ncis: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HardwareSpecs {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    processor_name: Option<String>,
+    #[serde(default)]
+    processor_architecture: Option<String>,
+    #[serde(default)]
+    number_of_processors: Option<u64>,
+    #[serde(default)]
+    cores_per_processor: Option<u64>,
+    #[serde(default)]
+    threads_per_processor: Option<u64>,
+    #[serde(default)]
+    memory_size: Option<Quantity>,
+    #[serde(default)]
+    disk_groups: Vec<DiskGroup>,
+    #[serde(default)]
+    default_hardware_raid_type: Option<String>,
+    #[serde(default)]
+    default_hardware_raid_size: Option<Value>,
+    #[serde(default)]
+    boot_mode: Option<String>,
+    #[serde(default)]
+    motherboard: Option<String>,
+    #[serde(default)]
+    form_factor: Option<String>,
+    #[serde(default)]
+    expansion_cards: Option<Value>,
+    #[serde(default)]
+    usb_keys: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiskGroup {
+    #[serde(default)]
+    disk_group_id: Option<u64>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    disk_size: Option<Quantity>,
+    #[serde(default)]
+    disk_type: Option<String>,
+    #[serde(default)]
+    number_of_disks: Option<u64>,
+    #[serde(default)]
+    raid_controller: Option<Value>,
+    #[serde(default)]
+    default_hardware_raid_type: Option<String>,
+    #[serde(default)]
+    default_hardware_raid_size: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Quantity {
+    #[serde(default)]
+    value: Option<Value>,
+    #[serde(default)]
+    unit: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NetworkSpecs {
+    #[serde(default)]
+    bandwidth: Option<BandwidthSpecs>,
+    #[serde(default)]
+    connection: Option<Quantity>,
+    #[serde(default)]
+    ola: Option<OlaSpecs>,
+    #[serde(default)]
+    routing: Option<RoutingSpecs>,
+    #[serde(default)]
+    switching: Option<SwitchingSpecs>,
+    #[serde(default)]
+    traffic: Option<TrafficSpecs>,
+    #[serde(default)]
+    vmac: Option<VmacSpecs>,
+    #[serde(default)]
+    vrack: Option<VrackSpecs>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BandwidthSpecs {
+    #[serde(default)]
+    internet_to_ovh: Option<Quantity>,
+    #[serde(default)]
+    ovh_to_internet: Option<Quantity>,
+    #[serde(default)]
+    ovh_to_ovh: Option<Quantity>,
+    #[serde(default, rename = "type")]
+    bandwidth_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OlaSpecs {
+    #[serde(default)]
+    available: Option<bool>,
+    #[serde(default)]
+    available_modes: Vec<String>,
+    #[serde(default, rename = "default")]
+    is_default: Option<bool>,
+    #[serde(default)]
+    interfaces: Vec<OlaInterface>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    supported_modes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OlaInterface {
+    #[serde(default)]
+    aggregation: Option<bool>,
+    #[serde(default)]
+    count: Option<u64>,
+    #[serde(default, rename = "type")]
+    interface_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RoutingSpecs {
+    #[serde(default)]
+    ipv4: Option<RouteSpecs>,
+    #[serde(default)]
+    ipv6: Option<RouteSpecs>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RouteSpecs {
+    #[serde(default)]
+    gateway: Option<String>,
+    #[serde(default)]
+    ip: Option<String>,
+    #[serde(default)]
+    network: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SwitchingSpecs {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrafficSpecs {
+    #[serde(default)]
+    input_quota_size: Option<Quantity>,
+    #[serde(default)]
+    input_quota_used: Option<Quantity>,
+    #[serde(default)]
+    output_quota_size: Option<Quantity>,
+    #[serde(default)]
+    output_quota_used: Option<Quantity>,
+    #[serde(default)]
+    is_throttled: Option<bool>,
+    #[serde(default)]
+    reset_quota_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VmacSpecs {
+    #[serde(default)]
+    supported: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VrackSpecs {
+    #[serde(default)]
+    bandwidth: Option<Quantity>,
+    #[serde(default, rename = "type")]
+    vrack_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -456,6 +691,9 @@ impl IpmiAccessValue {
 struct ServerRow {
     service_name: String,
     details: Option<ServerDetails>,
+    hardware: Option<HardwareSpecs>,
+    network: Option<NetworkSpecs>,
+    load_errors: Vec<String>,
     last_error: Option<String>,
 }
 
@@ -475,6 +713,18 @@ impl ServerRow {
             .cloned()
             .unwrap_or_else(|| "-".to_string())
     }
+
+    fn hardware_summary(&self) -> String {
+        let Some(hardware) = &self.hardware else {
+            return "-".to_string();
+        };
+        let parts = [
+            hardware.cpu_label(),
+            hardware.memory_label(),
+            hardware.disk_summary(),
+        ];
+        join_non_empty(parts.into_iter().flatten(), " / ").unwrap_or_else(|| "-".to_string())
+    }
 }
 
 impl ServerDetails {
@@ -487,6 +737,266 @@ impl ServerDetails {
     }
 }
 
+impl HardwareSpecs {
+    fn cpu_label(&self) -> Option<String> {
+        let name = self
+            .processor_name
+            .as_deref()
+            .filter(|name| !name.is_empty())?;
+        let topology = match (self.total_cores(), self.total_threads()) {
+            (Some(cores), Some(threads)) => Some(format!("{cores}c/{threads}t")),
+            (Some(cores), None) => Some(format!("{cores}c")),
+            (None, Some(threads)) => Some(format!("{threads}t")),
+            (None, None) => None,
+        };
+
+        Some(match topology {
+            Some(topology) => format!("{name} ({topology})"),
+            None => name.to_string(),
+        })
+    }
+
+    fn topology_label(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(processors) = self.number_of_processors {
+            parts.push(plural(processors, "socket"));
+        }
+        if let Some(cores) = self.cores_per_processor {
+            parts.push(format!("{cores} cores/socket"));
+        }
+        if let Some(threads) = self.threads_per_processor {
+            parts.push(format!("{threads} threads/socket"));
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+
+    fn memory_label(&self) -> Option<String> {
+        self.memory_size.as_ref().and_then(format_memory)
+    }
+
+    fn disk_summary(&self) -> Option<String> {
+        join_non_empty(self.disk_groups.iter().filter_map(DiskGroup::summary), ", ")
+    }
+
+    fn total_cores(&self) -> Option<u64> {
+        Some(self.number_of_processors? * self.cores_per_processor?)
+    }
+
+    fn total_threads(&self) -> Option<u64> {
+        Some(self.number_of_processors? * self.threads_per_processor?)
+    }
+}
+
+impl DiskGroup {
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(count) = self.number_of_disks {
+            if let Some(size) = self.disk_size.as_ref().and_then(format_quantity) {
+                parts.push(format!("{count}x{size}"));
+            } else {
+                parts.push(plural(count, "disk"));
+            }
+        } else if let Some(size) = self.disk_size.as_ref().and_then(format_quantity) {
+            parts.push(size);
+        }
+        if let Some(disk_type) = self.disk_type.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(disk_type.to_string());
+        }
+        if let Some(raid) = self
+            .default_hardware_raid_type
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(raid.to_string());
+        }
+
+        if parts.is_empty() {
+            self.description
+                .as_deref()
+                .filter(|description| !description.is_empty())
+                .map(ToString::to_string)
+        } else {
+            Some(parts.join(" "))
+        }
+    }
+
+    fn detail(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(description) = self
+            .description
+            .as_deref()
+            .filter(|description| !description.is_empty())
+        {
+            parts.push(description.to_string());
+        } else if let Some(summary) = self.summary() {
+            parts.push(summary);
+        }
+        if let Some(controller) = self.raid_controller.as_ref().and_then(format_value) {
+            parts.push(format!("controller {controller}"));
+        }
+        if let Some(raid) = self
+            .default_hardware_raid_type
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(format!("default RAID {raid}"));
+        }
+        if let Some(raid_size) = self
+            .default_hardware_raid_size
+            .as_ref()
+            .and_then(format_quantity_value)
+        {
+            parts.push(format!("RAID size {raid_size}"));
+        }
+        (!parts.is_empty()).then(|| parts.join("; "))
+    }
+}
+
+impl BandwidthSpecs {
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(value) = self.ovh_to_internet.as_ref().and_then(format_quantity) {
+            parts.push(format!("out {value}"));
+        }
+        if let Some(value) = self.internet_to_ovh.as_ref().and_then(format_quantity) {
+            parts.push(format!("in {value}"));
+        }
+        if let Some(value) = self.ovh_to_ovh.as_ref().and_then(format_quantity) {
+            parts.push(format!("OVH {value}"));
+        }
+        if let Some(kind) = self
+            .bandwidth_type
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(kind.to_string());
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+}
+
+impl OlaSpecs {
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(available) = self.available {
+            parts.push(if available {
+                "available".to_string()
+            } else {
+                "unavailable".to_string()
+            });
+        }
+        if let Some(name) = self.name.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(format!("mode {name}"));
+        }
+        if let Some(is_default) = self.is_default {
+            parts.push(if is_default {
+                "default".to_string()
+            } else {
+                "custom".to_string()
+            });
+        }
+        if !self.available_modes.is_empty() {
+            parts.push(format!("available {}", self.available_modes.join(", ")));
+        } else if !self.supported_modes.is_empty() {
+            parts.push(format!("supported {}", self.supported_modes.join(", ")));
+        }
+        (!parts.is_empty()).then(|| parts.join("; "))
+    }
+}
+
+impl OlaInterface {
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(count) = self.count {
+            parts.push(plural(count, "interface"));
+        }
+        if let Some(interface_type) = self
+            .interface_type
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(interface_type.to_string());
+        }
+        if let Some(aggregation) = self.aggregation {
+            parts.push(if aggregation {
+                "aggregated".to_string()
+            } else {
+                "standalone".to_string()
+            });
+        }
+        (!parts.is_empty()).then(|| parts.join(" "))
+    }
+}
+
+impl RouteSpecs {
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(ip) = self.ip.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(format!("ip {ip}"));
+        }
+        if let Some(network) = self.network.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(format!("network {network}"));
+        }
+        if let Some(gateway) = self.gateway.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(format!("gw {gateway}"));
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+}
+
+impl TrafficSpecs {
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(value) = self.input_quota_used.as_ref().and_then(format_quantity) {
+            parts.push(format!("in used {value}"));
+        }
+        if let Some(value) = self.input_quota_size.as_ref().and_then(format_quantity) {
+            parts.push(format!("in quota {value}"));
+        }
+        if let Some(value) = self.output_quota_used.as_ref().and_then(format_quantity) {
+            parts.push(format!("out used {value}"));
+        }
+        if let Some(value) = self.output_quota_size.as_ref().and_then(format_quantity) {
+            parts.push(format!("out quota {value}"));
+        }
+        if let Some(throttled) = self.is_throttled {
+            parts.push(format!("throttled {throttled}"));
+        }
+        if let Some(reset) = self
+            .reset_quota_date
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(format!("resets {reset}"));
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+}
+
+impl VirtualNetworkInterface {
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(name) = self.name.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(name.to_string());
+        } else if let Some(uuid) = self.uuid.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(uuid.to_string());
+        }
+        if let Some(mode) = self.mode.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(mode.to_string());
+        }
+        if let Some(enabled) = self.enabled {
+            parts.push(if enabled { "enabled" } else { "disabled" }.to_string());
+        }
+        if let Some(vrack) = self.vrack.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(format!("vRack {vrack}"));
+        }
+        if let Some(ncis) = self.ncis.as_ref().and_then(format_ncis) {
+            parts.push(ncis);
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+}
+
 fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
     let service_names = client.list_servers()?;
     let mut rows = service_names
@@ -494,6 +1004,9 @@ fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
         .map(|service_name| ServerRow {
             service_name: service_name.clone(),
             details: None,
+            hardware: None,
+            network: None,
+            load_errors: Vec::new(),
             last_error: None,
         })
         .collect::<Vec<_>>();
@@ -504,25 +1017,54 @@ fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
         .map(|(index, row)| (index, row.service_name.clone()))
         .collect::<Vec<_>>();
     let detail_results =
-        load_server_details_parallel(client.clone(), detail_jobs, DETAIL_WORKER_POOL_SIZE);
+        load_server_specs_parallel(client.clone(), detail_jobs, DETAIL_WORKER_POOL_SIZE);
 
-    for (index, result) in detail_results {
+    for (index, specs) in detail_results {
         if let Some(row) = rows.get_mut(index) {
-            match result {
-                Ok(details) => row.details = Some(details),
-                Err(error) => row.last_error = Some(error),
-            }
+            row.details = specs.details;
+            row.hardware = specs.hardware;
+            row.network = specs.network;
+            row.load_errors = specs.errors;
         }
     }
 
     Ok(rows)
 }
 
-fn load_server_details_parallel(
+#[derive(Debug, Clone, Default)]
+struct ServerSpecsLoad {
+    details: Option<ServerDetails>,
+    hardware: Option<HardwareSpecs>,
+    network: Option<NetworkSpecs>,
+    errors: Vec<String>,
+}
+
+fn load_server_specs(client: &OvhClient, service_name: &str) -> ServerSpecsLoad {
+    let mut specs = ServerSpecsLoad::default();
+
+    match client.server_details(service_name) {
+        Ok(details) => specs.details = Some(details),
+        Err(error) => specs.errors.push(format!("details: {error:#}")),
+    }
+
+    match client.server_hardware(service_name) {
+        Ok(hardware) => specs.hardware = Some(hardware),
+        Err(error) => specs.errors.push(format!("hardware: {error:#}")),
+    }
+
+    match client.server_network(service_name) {
+        Ok(network) => specs.network = Some(network),
+        Err(error) => specs.errors.push(format!("network: {error:#}")),
+    }
+
+    specs
+}
+
+fn load_server_specs_parallel(
     client: OvhClient,
     jobs: Vec<(usize, String)>,
     concurrency: usize,
-) -> Vec<(usize, Result<ServerDetails, String>)> {
+) -> Vec<(usize, ServerSpecsLoad)> {
     if jobs.is_empty() {
         return Vec::new();
     }
@@ -548,9 +1090,7 @@ fn load_server_details_parallel(
                 let Ok((index, service_name)) = job else {
                     break;
                 };
-                let result = client
-                    .server_details(&service_name)
-                    .map_err(|error| format!("{error:#}"));
+                let result = load_server_specs(&client, &service_name);
                 let _ = result_tx.send((index, result));
             }
         });
@@ -1066,6 +1606,7 @@ impl App {
                 Cell::from(server.display_name().to_string()),
                 Cell::from(server.field(|details| details.ip.as_ref())),
                 Cell::from(server.field(|details| details.datacenter.as_ref())),
+                Cell::from(server.hardware_summary()),
                 Cell::from(server.field(|details| details.state.as_ref())),
             ])
             .into()
@@ -1095,14 +1636,15 @@ impl App {
         let table = Table::new(
             rows,
             [
-                Constraint::Percentage(36),
                 Constraint::Percentage(28),
-                Constraint::Percentage(18),
-                Constraint::Percentage(18),
+                Constraint::Percentage(22),
+                Constraint::Percentage(10),
+                Constraint::Percentage(30),
+                Constraint::Percentage(10),
             ],
         )
         .header(
-            Row::new(["Name", "IP", "DC", "State"]).style(
+            Row::new(["Name", "IP", "DC", "Hardware", "State"]).style(
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -1170,6 +1712,7 @@ fn detail_lines(server: &ServerRow) -> Vec<Line<'static>> {
     lines.push(kv("display", server.display_name()));
 
     if let Some(details) = &server.details {
+        push_section(&mut lines, "Server");
         push_opt(
             &mut lines,
             "iamDisplayName",
@@ -1184,28 +1727,189 @@ fn detail_lines(server: &ServerRow) -> Vec<Line<'static>> {
         push_opt(&mut lines, "datacenter", details.datacenter.as_deref());
         push_opt(&mut lines, "rack", details.rack.as_deref());
         push_opt(&mut lines, "state", details.state.as_deref());
+        push_opt(&mut lines, "power", details.power_state.as_deref());
         push_opt(&mut lines, "os", details.os.as_deref());
+        push_opt(&mut lines, "rootDevice", details.root_device.as_deref());
+        push_opt(&mut lines, "support", details.support_level.as_deref());
         push_opt(&mut lines, "range", details.commercial_range.as_deref());
         if let Some(link_speed) = details.link_speed {
             lines.push(kv("linkSpeed", &link_speed.to_string()));
+        }
+        if let Some(monitoring) = details.monitoring {
+            lines.push(kv("monitoring", &monitoring.to_string()));
         }
         if let Some(pro) = details.professional_use {
             lines.push(kv("professionalUse", &pro.to_string()));
         }
     }
 
-    if let Some(error) = &server.last_error {
-        lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
-            "Errors",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )));
+    if let Some(hardware) = &server.hardware {
+        push_hardware_lines(&mut lines, hardware);
+    }
+
+    if server.network.is_some() || server.details.as_ref().is_some_and(has_network_interfaces) {
+        push_network_lines(&mut lines, server.network.as_ref(), server.details.as_ref());
+    }
+
+    if !server.load_errors.is_empty() || server.last_error.is_some() {
+        push_error_lines(&mut lines, server);
+    }
+
+    lines
+}
+
+fn push_hardware_lines(lines: &mut Vec<Line<'static>>, hardware: &HardwareSpecs) {
+    push_section(lines, "Hardware");
+    push_opt(lines, "description", hardware.description.as_deref());
+    push_opt_owned(lines, "cpu", hardware.cpu_label());
+    push_opt(lines, "cpuArch", hardware.processor_architecture.as_deref());
+    push_opt_owned(lines, "topology", hardware.topology_label());
+    push_opt_owned(lines, "memory", hardware.memory_label());
+    push_opt(lines, "motherboard", hardware.motherboard.as_deref());
+    push_opt(lines, "formFactor", hardware.form_factor.as_deref());
+    push_opt(lines, "bootMode", hardware.boot_mode.as_deref());
+
+    let default_raid = join_non_empty(
+        [
+            hardware.default_hardware_raid_type.clone(),
+            hardware
+                .default_hardware_raid_size
+                .as_ref()
+                .and_then(format_quantity_value),
+        ]
+        .into_iter()
+        .flatten(),
+        ", ",
+    );
+    push_opt_owned(lines, "defaultRaid", default_raid);
+
+    for (index, disk) in hardware.disk_groups.iter().enumerate() {
+        if let Some(detail) = disk.detail() {
+            let group = disk
+                .disk_group_id
+                .map_or_else(|| (index + 1).to_string(), |id| id.to_string());
+            lines.push(kv(&format!("diskGroup{group}"), &detail));
+        }
+    }
+
+    push_opt_owned(
+        lines,
+        "expansionCards",
+        hardware.expansion_cards.as_ref().and_then(format_value),
+    );
+    push_opt_owned(
+        lines,
+        "usbKeys",
+        hardware.usb_keys.as_ref().and_then(format_value),
+    );
+}
+
+fn push_network_lines(
+    lines: &mut Vec<Line<'static>>,
+    network: Option<&NetworkSpecs>,
+    details: Option<&ServerDetails>,
+) {
+    push_section(lines, "Network");
+
+    if let Some(network) = network {
+        push_opt_owned(
+            lines,
+            "connection",
+            network.connection.as_ref().and_then(format_quantity),
+        );
+        push_opt_owned(
+            lines,
+            "bandwidth",
+            network.bandwidth.as_ref().and_then(BandwidthSpecs::summary),
+        );
+        if let Some(routing) = &network.routing {
+            push_opt_owned(
+                lines,
+                "ipv4Route",
+                routing.ipv4.as_ref().and_then(RouteSpecs::summary),
+            );
+            push_opt_owned(
+                lines,
+                "ipv6Route",
+                routing.ipv6.as_ref().and_then(RouteSpecs::summary),
+            );
+        }
+        if let Some(ola) = &network.ola {
+            push_opt_owned(lines, "ola", ola.summary());
+            for (index, interface) in ola.interfaces.iter().enumerate() {
+                push_opt_owned(lines, &format!("olaIf{}", index + 1), interface.summary());
+            }
+        }
+        if let Some(vrack) = &network.vrack {
+            let summary = join_non_empty(
+                [
+                    vrack.bandwidth.as_ref().and_then(format_quantity),
+                    vrack.vrack_type.clone(),
+                ]
+                .into_iter()
+                .flatten(),
+                ", ",
+            );
+            push_opt_owned(lines, "vRack", summary);
+        }
+        if let Some(vmac) = &network.vmac
+            && let Some(supported) = vmac.supported
+        {
+            lines.push(kv("vMAC", &supported.to_string()));
+        }
+        if let Some(switching) = &network.switching {
+            push_opt(lines, "switch", switching.name.as_deref());
+        }
+        if let Some(traffic) = &network.traffic {
+            push_opt_owned(lines, "traffic", traffic.summary());
+        }
+    }
+
+    if let Some(details) = details {
+        push_virtual_network_interfaces(lines, details);
+    }
+}
+
+fn push_virtual_network_interfaces(lines: &mut Vec<Line<'static>>, details: &ServerDetails) {
+    for (index, vni) in details.vnis.iter().enumerate() {
+        push_opt_owned(lines, &format!("vni{}", index + 1), vni.summary());
+    }
+    if !details.enabled_public_vnis.is_empty() {
+        lines.push(kv(
+            "publicVNIs",
+            &details.enabled_public_vnis.len().to_string(),
+        ));
+    }
+    if !details.enabled_vrack_vnis.is_empty() {
+        lines.push(kv(
+            "vRackVNIs",
+            &details.enabled_vrack_vnis.len().to_string(),
+        ));
+    }
+    if !details.enabled_vrack_aggregation_vnis.is_empty() {
+        lines.push(kv(
+            "vRackAggVNIs",
+            &details.enabled_vrack_aggregation_vnis.len().to_string(),
+        ));
+    }
+}
+
+fn push_error_lines(lines: &mut Vec<Line<'static>>, server: &ServerRow) {
+    push_section_with_style(
+        lines,
+        "Errors",
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    );
+    for error in &server.load_errors {
         for line in error.lines() {
             lines.push(Line::raw(line.to_string()));
         }
     }
-
-    lines
+    if let Some(error) = &server.last_error {
+        for line in error.lines() {
+            lines.push(Line::raw(line.to_string()));
+        }
+    }
 }
 
 fn kv(key: &str, value: &str) -> Line<'static> {
@@ -1215,8 +1919,211 @@ fn kv(key: &str, value: &str) -> Line<'static> {
     ])
 }
 
+fn push_section(lines: &mut Vec<Line<'static>>, title: &str) {
+    push_section_with_style(
+        lines,
+        title,
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
+}
+
+fn push_section_with_style(lines: &mut Vec<Line<'static>>, title: &str, style: Style) {
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(title.to_string(), style)));
+}
+
 fn push_opt(lines: &mut Vec<Line<'static>>, key: &str, value: Option<&str>) {
     if let Some(value) = value.filter(|value| !value.is_empty()) {
         lines.push(kv(key, value));
+    }
+}
+
+fn push_opt_owned(lines: &mut Vec<Line<'static>>, key: &str, value: Option<String>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        lines.push(kv(key, &value));
+    }
+}
+
+fn has_network_interfaces(details: &ServerDetails) -> bool {
+    !details.vnis.is_empty()
+        || !details.enabled_public_vnis.is_empty()
+        || !details.enabled_vrack_vnis.is_empty()
+        || !details.enabled_vrack_aggregation_vnis.is_empty()
+}
+
+fn format_quantity(quantity: &Quantity) -> Option<String> {
+    let value = quantity.value.as_ref().and_then(format_value)?;
+    let unit = quantity.unit.as_deref().unwrap_or_default().trim();
+    if unit.is_empty() {
+        Some(value)
+    } else {
+        Some(format!("{value} {unit}"))
+    }
+}
+
+fn format_quantity_value(value: &Value) -> Option<String> {
+    serde_json::from_value::<Quantity>(value.clone())
+        .ok()
+        .and_then(|quantity| format_quantity(&quantity))
+        .or_else(|| format_value(value))
+}
+
+fn format_memory(quantity: &Quantity) -> Option<String> {
+    let unit = quantity.unit.as_deref().unwrap_or_default();
+    if unit.eq_ignore_ascii_case("MB")
+        && let Some(value) = quantity.value.as_ref().and_then(value_as_f64)
+    {
+        let gb = value / 1024.0;
+        if gb >= 1.0 {
+            return Some(format!("{} GB", format_number(gb)));
+        }
+    }
+    format_quantity(quantity)
+}
+
+fn format_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::String(value) => (!value.is_empty()).then(|| value.to_string()),
+        Value::Array(values) => join_non_empty(values.iter().filter_map(format_value), ", "),
+        Value::Object(_) => Some(value.to_string()),
+    }
+}
+
+fn format_ncis(value: &Value) -> Option<String> {
+    match value {
+        Value::Array(values) if values.is_empty() => None,
+        Value::Array(values) => Some(plural(values.len() as u64, "NCI")),
+        value => format_value(value).map(|value| format!("NCI {value}")),
+    }
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(value) => value.as_f64(),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn format_number(value: f64) -> String {
+    if (value - value.round()).abs() < f64::EPSILON {
+        format!("{}", value.round() as u64)
+    } else {
+        let formatted = format!("{value:.1}");
+        formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+}
+
+fn plural(count: u64, singular: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {singular}s")
+    }
+}
+
+fn join_non_empty(items: impl IntoIterator<Item = String>, separator: &str) -> Option<String> {
+    let items = items
+        .into_iter()
+        .filter(|item| !item.trim().is_empty())
+        .collect::<Vec<_>>();
+    (!items.is_empty()).then(|| items.join(separator))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn hardware_summary_includes_cpu_memory_and_disks() {
+        let hardware: HardwareSpecs = serde_json::from_value(json!({
+            "processorName": "Epyc7302",
+            "numberOfProcessors": 1,
+            "coresPerProcessor": 16,
+            "threadsPerProcessor": 32,
+            "memorySize": {
+                "value": 131072,
+                "unit": "MB"
+            },
+            "diskGroups": [
+                {
+                    "diskSize": {
+                        "value": 1920,
+                        "unit": "GB"
+                    },
+                    "diskType": "NVME",
+                    "numberOfDisks": 2
+                }
+            ]
+        }))
+        .unwrap();
+        let row = ServerRow {
+            service_name: "ns123.example.net".to_string(),
+            details: None,
+            hardware: Some(hardware),
+            network: None,
+            load_errors: Vec::new(),
+            last_error: None,
+        };
+
+        assert_eq!(
+            row.hardware_summary(),
+            "Epyc7302 (16c/32t) / 128 GB / 2x1920 GB NVME"
+        );
+    }
+
+    #[test]
+    fn network_summaries_include_bandwidth_and_ola_interfaces() {
+        let network: NetworkSpecs = serde_json::from_value(json!({
+            "bandwidth": {
+                "ovhToInternet": {
+                    "value": 1,
+                    "unit": "Gbps"
+                },
+                "internetToOvh": {
+                    "value": 1,
+                    "unit": "Gbps"
+                },
+                "ovhToOvh": {
+                    "value": 10,
+                    "unit": "Gbps"
+                },
+                "type": "included"
+            },
+            "ola": {
+                "available": true,
+                "name": "public",
+                "default": false,
+                "interfaces": [
+                    {
+                        "count": 2,
+                        "type": "public",
+                        "aggregation": true
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            network.bandwidth.as_ref().and_then(BandwidthSpecs::summary),
+            Some("out 1 Gbps, in 1 Gbps, OVH 10 Gbps, included".to_string())
+        );
+        assert_eq!(
+            network
+                .ola
+                .as_ref()
+                .and_then(|ola| ola.interfaces[0].summary()),
+            Some("2 interfaces public aggregated".to_string())
+        );
     }
 }
