@@ -46,7 +46,7 @@ If OVH returns `Invalid account/password`, make sure you are using the API
 region that owns the account. For OVH US sub-users, use:
 
 ```text
-https://us.ovhcloud.com/auth/api/createToken
+https://us.ovhcloud.com/auth/api/createToken?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2Fnetworking&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
 ```
 
 ```text
