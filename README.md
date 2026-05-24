@@ -36,9 +36,28 @@ export OVH_IPMI_TTL=15
 The consumer key needs read access to dedicated server routes and write access
 for IPMI session creation and restarts:
 
+Use this link to create a US OVHcloud API token with the required rights:
+
+```text
+https://api.us.ovhcloud.com/createToken/index.cgi?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac%2F%2A&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
+```
+
+If OVH returns `Invalid account/password`, make sure you are using the API
+region that owns the account. For OVH US sub-users, use:
+
+```text
+https://us.ovhcloud.com/auth/api/createToken?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac%2F%2A&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
+```
+
 ```text
 GET  /dedicated/server
 GET  /dedicated/server/*
+GET  /dedicated/server/*/specifications/hardware
+GET  /dedicated/server/*/specifications/network
+GET  /dedicated/server/*/virtualNetworkInterface
+GET  /dedicated/server/*/virtualNetworkInterface/*
+GET  /dedicated/server/*/virtualMac
+GET  /dedicated/server/*/virtualMac/*
 POST /dedicated/server/*/features/ipmi/access
 POST /dedicated/server/*/reboot
 ```
@@ -55,10 +74,16 @@ cargo run -- credential-help
 cargo run
 ```
 
+The server list includes an at-a-glance hardware summary. Selecting a server
+shows CPU topology, memory, disk groups, RAID details, motherboard, boot mode,
+server id, rack, datacenter, region/availability zone, bandwidth, routing,
+vRack/vMAC support, OLA, and virtual network interfaces with their MAC
+addresses when OVH returns them.
+
 ## Keys
 
 ```text
-/             filter by displayed server name
+/             filter by inventory fields
 enter/esc     finish filtering
 backspace     edit filter
 ctrl-u        clear filter while filtering
