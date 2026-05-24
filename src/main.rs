@@ -107,6 +107,7 @@ Create a consumer key from the OVH API console with read access to:
   GET /dedicated/server/*
   GET /dedicated/server/*/specifications/hardware
   GET /dedicated/server/*/specifications/network
+  GET /dedicated/server/*/networking
 
 and write access to request IPMI sessions and restart servers:
 
@@ -192,6 +193,13 @@ impl OvhClient {
     fn server_network(&self, service_name: &str) -> Result<NetworkSpecs> {
         self.get(&format!(
             "/dedicated/server/{}/specifications/network",
+            enc(service_name)
+        ))
+    }
+
+    fn server_networking(&self, service_name: &str) -> Result<ServerNetworking> {
+        self.get(&format!(
+            "/dedicated/server/{}/networking",
             enc(service_name)
         ))
     }
@@ -701,6 +709,26 @@ struct VrackSpecs {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerNetworking {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    interfaces: Vec<NetworkInterfaceGroup>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NetworkInterfaceGroup {
+    #[serde(default, rename = "type")]
+    interface_type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
+    macs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct IpmiAccessValue {
     #[serde(skip)]
     raw: Value,
@@ -725,6 +753,7 @@ struct ServerRow {
     details: Option<ServerDetails>,
     hardware: Option<HardwareSpecs>,
     network: Option<NetworkSpecs>,
+    networking: Option<ServerNetworking>,
     load_errors: Vec<String>,
     last_error: Option<String>,
 }
@@ -766,15 +795,34 @@ impl ServerRow {
     }
 
     fn mac_summary(&self) -> Option<String> {
-        let details = self.details.as_ref()?;
-        let mut macs = details
-            .vnis
-            .iter()
+        let mut macs = self
+            .details
+            .as_ref()
+            .into_iter()
+            .flat_map(|details| details.vnis.iter())
             .flat_map(|vni| vni.nics.iter().cloned())
+            .chain(
+                self.networking
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|networking| networking.interfaces.iter())
+                    .flat_map(|interface| interface.macs.iter().cloned()),
+            )
             .collect::<Vec<_>>();
         macs.sort();
         macs.dedup();
         join_non_empty(macs, ", ")
+    }
+
+    fn interface_summary(&self) -> Option<String> {
+        let networking = self.networking.as_ref()?;
+        join_non_empty(
+            networking
+                .interfaces
+                .iter()
+                .filter_map(NetworkInterfaceGroup::summary),
+            ", ",
+        )
     }
 
     fn matches_filter(&self, query: &str) -> bool {
@@ -794,6 +842,7 @@ impl ServerRow {
         push_search_owned(&mut values, "location", Some(self.location_summary()));
         push_search_owned(&mut values, "hardware", Some(self.hardware_summary()));
         push_search_owned(&mut values, "mac", self.mac_summary());
+        push_search_owned(&mut values, "interface", self.interface_summary());
 
         if let Some(details) = &self.details {
             if let Some(iam) = &details.iam {
@@ -848,6 +897,15 @@ impl ServerRow {
                     "ipv6",
                     routing.ipv6.as_ref().and_then(RouteSpecs::summary),
                 );
+            }
+        }
+
+        if let Some(networking) = &self.networking {
+            push_search_opt(&mut values, "networking", networking.status.as_deref());
+            push_search_opt(&mut values, "networking", networking.description.as_deref());
+            for interface in &networking.interfaces {
+                push_search_owned(&mut values, "interface", interface.summary());
+                push_search_owned(&mut values, "mac", interface.mac_summary());
             }
         }
 
@@ -1182,6 +1240,37 @@ impl VirtualNetworkInterface {
     }
 }
 
+impl ServerNetworking {
+    fn has_interfaces(&self) -> bool {
+        !self.interfaces.is_empty()
+    }
+}
+
+impl NetworkInterfaceGroup {
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(interface_type) = self
+            .interface_type
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(interface_type.to_string());
+        }
+        if !self.macs.is_empty() {
+            parts.push(format!(
+                "{}: {}",
+                plural(self.macs.len() as u64, "MAC"),
+                self.macs.join(", ")
+            ));
+        }
+        (!parts.is_empty()).then(|| parts.join(" "))
+    }
+
+    fn mac_summary(&self) -> Option<String> {
+        join_non_empty(self.macs.iter().cloned(), ", ")
+    }
+}
+
 fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
     let service_names = client.list_servers()?;
     let mut rows = service_names
@@ -1191,6 +1280,7 @@ fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
             details: None,
             hardware: None,
             network: None,
+            networking: None,
             load_errors: Vec::new(),
             last_error: None,
         })
@@ -1209,6 +1299,7 @@ fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
             row.details = specs.details;
             row.hardware = specs.hardware;
             row.network = specs.network;
+            row.networking = specs.networking;
             row.load_errors = specs.errors;
         }
     }
@@ -1221,6 +1312,7 @@ struct ServerSpecsLoad {
     details: Option<ServerDetails>,
     hardware: Option<HardwareSpecs>,
     network: Option<NetworkSpecs>,
+    networking: Option<ServerNetworking>,
     errors: Vec<String>,
 }
 
@@ -1240,6 +1332,11 @@ fn load_server_specs(client: &OvhClient, service_name: &str) -> ServerSpecsLoad 
     match client.server_network(service_name) {
         Ok(network) => specs.network = Some(network),
         Err(error) => specs.errors.push(format!("network: {error:#}")),
+    }
+
+    match client.server_networking(service_name) {
+        Ok(networking) => specs.networking = Some(networking),
+        Err(error) => specs.errors.push(format!("networking: {error:#}")),
     }
 
     specs
@@ -1956,8 +2053,19 @@ fn detail_lines(server: &ServerRow) -> Vec<Line<'static>> {
         push_hardware_lines(&mut lines, hardware);
     }
 
-    if server.network.is_some() || server.details.as_ref().is_some_and(has_network_interfaces) {
-        push_network_lines(&mut lines, server.network.as_ref(), server.details.as_ref());
+    if server.network.is_some()
+        || server
+            .networking
+            .as_ref()
+            .is_some_and(ServerNetworking::has_interfaces)
+        || server.details.as_ref().is_some_and(has_network_interfaces)
+    {
+        push_network_lines(
+            &mut lines,
+            server.network.as_ref(),
+            server.networking.as_ref(),
+            server.details.as_ref(),
+        );
     }
 
     if !server.load_errors.is_empty() || server.last_error.is_some() {
@@ -2016,6 +2124,7 @@ fn push_hardware_lines(lines: &mut Vec<Line<'static>>, hardware: &HardwareSpecs)
 fn push_network_lines(
     lines: &mut Vec<Line<'static>>,
     network: Option<&NetworkSpecs>,
+    networking: Option<&ServerNetworking>,
     details: Option<&ServerDetails>,
 ) {
     push_section(lines, "Network");
@@ -2074,6 +2183,18 @@ fn push_network_lines(
         }
         if let Some(traffic) = &network.traffic {
             push_opt_owned(lines, "traffic", traffic.summary());
+        }
+    }
+
+    if let Some(networking) = networking {
+        push_opt(lines, "nicStatus", networking.status.as_deref());
+        push_opt(lines, "nicDesc", networking.description.as_deref());
+        for (index, interface) in networking.interfaces.iter().enumerate() {
+            push_opt_owned(
+                lines,
+                &format!("nicGroup{}", index + 1),
+                interface.summary(),
+            );
         }
     }
 
@@ -2324,6 +2445,7 @@ mod tests {
             details: None,
             hardware: Some(hardware),
             network: None,
+            networking: None,
             load_errors: Vec::new(),
             last_error: None,
         };
@@ -2363,6 +2485,17 @@ mod tests {
             details: Some(details),
             hardware: None,
             network: None,
+            networking: Some(ServerNetworking {
+                status: Some("active".to_string()),
+                description: None,
+                interfaces: vec![NetworkInterfaceGroup {
+                    interface_type: Some("public".to_string()),
+                    macs: vec![
+                        "aa:bb:cc:dd:ee:03".to_string(),
+                        "aa:bb:cc:dd:ee:04".to_string(),
+                    ],
+                }],
+            }),
             load_errors: Vec::new(),
             last_error: None,
         };
@@ -2370,12 +2503,15 @@ mod tests {
         assert_eq!(row.location_summary(), "bhs1 / BHS123A / bhs-a");
         assert_eq!(
             row.mac_summary(),
-            Some("aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02".to_string())
+            Some(
+                "aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02, aa:bb:cc:dd:ee:03, aa:bb:cc:dd:ee:04"
+                    .to_string()
+            )
         );
         assert!(row.matches_filter("rack:BHS123A"));
         assert!(row.matches_filter("serverId:1033516"));
         assert!(row.matches_filter("zone:bhs-a"));
-        assert!(row.matches_filter("aa:bb:cc:dd:ee:02"));
+        assert!(row.matches_filter("aa:bb:cc:dd:ee:04"));
         assert!(row.matches_filter("bhs1 public"));
     }
 

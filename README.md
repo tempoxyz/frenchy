@@ -41,6 +41,7 @@ GET  /dedicated/server
 GET  /dedicated/server/*
 GET  /dedicated/server/*/specifications/hardware
 GET  /dedicated/server/*/specifications/network
+GET  /dedicated/server/*/networking
 POST /dedicated/server/*/features/ipmi/access
 POST /dedicated/server/*/reboot
 ```
