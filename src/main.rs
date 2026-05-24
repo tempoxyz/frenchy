@@ -586,7 +586,7 @@ struct OlaSpecs {
     #[serde(default)]
     available: Option<bool>,
     #[serde(default)]
-    available_modes: Vec<String>,
+    available_modes: Vec<OlaMode>,
     #[serde(default, rename = "default")]
     is_default: Option<bool>,
     #[serde(default)]
@@ -595,6 +595,17 @@ struct OlaSpecs {
     name: Option<String>,
     #[serde(default)]
     supported_modes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OlaMode {
+    #[serde(default, rename = "default")]
+    is_default: Option<bool>,
+    #[serde(default)]
+    interfaces: Vec<OlaInterface>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -895,12 +906,43 @@ impl OlaSpecs {
                 "custom".to_string()
             });
         }
-        if !self.available_modes.is_empty() {
-            parts.push(format!("available {}", self.available_modes.join(", ")));
-        } else if !self.supported_modes.is_empty() {
+        if let Some(modes) = join_non_empty(
+            self.available_modes.iter().filter_map(OlaMode::name_label),
+            ", ",
+        ) {
+            parts.push(format!("available {modes}"));
+        }
+        if !self.supported_modes.is_empty() {
             parts.push(format!("supported {}", self.supported_modes.join(", ")));
         }
         (!parts.is_empty()).then(|| parts.join("; "))
+    }
+}
+
+impl OlaMode {
+    fn name_label(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(name) = self.name.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(name.to_string());
+        }
+        if let Some(is_default) = self.is_default {
+            parts.push(if is_default { "default" } else { "custom" }.to_string());
+        }
+        (!parts.is_empty()).then(|| parts.join(" "))
+    }
+
+    fn summary(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(label) = self.name_label() {
+            parts.push(label);
+        }
+        if let Some(interfaces) = join_non_empty(
+            self.interfaces.iter().filter_map(OlaInterface::summary),
+            " + ",
+        ) {
+            parts.push(interfaces);
+        }
+        (!parts.is_empty()).then(|| parts.join(": "))
     }
 }
 
@@ -1836,6 +1878,9 @@ fn push_network_lines(
         }
         if let Some(ola) = &network.ola {
             push_opt_owned(lines, "ola", ola.summary());
+            for (index, mode) in ola.available_modes.iter().enumerate() {
+                push_opt_owned(lines, &format!("olaMode{}", index + 1), mode.summary());
+            }
             for (index, interface) in ola.interfaces.iter().enumerate() {
                 push_opt_owned(lines, &format!("olaIf{}", index + 1), interface.summary());
             }
@@ -2102,6 +2147,25 @@ mod tests {
             "ola": {
                 "available": true,
                 "name": "public",
+                "availableModes": [
+                    {
+                        "name": "public(2)+private(2)",
+                        "default": true,
+                        "interfaces": [
+                            {
+                                "count": 2,
+                                "type": "public",
+                                "aggregation": true
+                            },
+                            {
+                                "count": 2,
+                                "type": "vrack",
+                                "aggregation": true
+                            }
+                        ]
+                    }
+                ],
+                "supportedModes": ["vrack_aggregation"],
                 "default": false,
                 "interfaces": [
                     {
@@ -2117,6 +2181,23 @@ mod tests {
         assert_eq!(
             network.bandwidth.as_ref().and_then(BandwidthSpecs::summary),
             Some("out 1 Gbps, in 1 Gbps, OVH 10 Gbps, included".to_string())
+        );
+        assert_eq!(
+            network.ola.as_ref().and_then(OlaSpecs::summary),
+            Some(
+                "available; mode public; custom; available public(2)+private(2) default; supported vrack_aggregation"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            network
+                .ola
+                .as_ref()
+                .and_then(|ola| ola.available_modes[0].summary()),
+            Some(
+                "public(2)+private(2) default: 2 interfaces public aggregated + 2 interfaces vrack aggregated"
+                    .to_string()
+            )
         );
         assert_eq!(
             network
