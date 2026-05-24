@@ -17,10 +17,13 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{
+        Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Table, TableState, Wrap,
+    },
 };
 use reqwest::blocking::Client;
 use serde::{Deserialize, Deserializer, de::DeserializeOwned};
@@ -31,6 +34,15 @@ const DEFAULT_ENDPOINT: &str = "https://api.us.ovhcloud.com/1.0";
 const DEFAULT_IPMI_TYPE: &str = "kvmipHtml5URL";
 const DEFAULT_IPMI_TTL: &str = "15";
 const DETAIL_WORKER_POOL_SIZE: usize = 128;
+const NETWORK_INTERFACE_CONTROLLER_LINK_TYPES: [&str; 7] = [
+    "isolated",
+    "private",
+    "private_lag",
+    "provisioning",
+    "provisioning_lag",
+    "public",
+    "public_lag",
+];
 const CONFIG_TEMPLATE: &str = r#"# frenchy config
 # Env vars with the same names override these values.
 
@@ -103,17 +115,19 @@ Optional config values:
 
 Create a consumer key from the OVH API console with read access to:
 
-  https://api.us.ovhcloud.com/createToken/index.cgi?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac%2F%2A&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
+  https://api.us.ovhcloud.com/createToken/index.cgi?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2FnetworkInterfaceController&GET=%2Fdedicated%2Fserver%2F%2A%2FnetworkInterfaceController%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac%2F%2A&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
 
 If OVH returns Invalid account/password, make sure you are using the API
 region that owns the account. For OVH US sub-users, use:
 
-  https://us.ovhcloud.com/auth/api/createToken?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac%2F%2A&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
+  https://us.ovhcloud.com/auth/api/createToken?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2FnetworkInterfaceController&GET=%2Fdedicated%2Fserver%2F%2A%2FnetworkInterfaceController%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac%2F%2A&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
 
   GET /dedicated/server
   GET /dedicated/server/*
   GET /dedicated/server/*/specifications/hardware
   GET /dedicated/server/*/specifications/network
+  GET /dedicated/server/*/networkInterfaceController
+  GET /dedicated/server/*/networkInterfaceController/*
   GET /dedicated/server/*/virtualNetworkInterface
   GET /dedicated/server/*/virtualNetworkInterface/*
   GET /dedicated/server/*/virtualMac
@@ -204,6 +218,33 @@ impl OvhClient {
         self.get(&format!(
             "/dedicated/server/{}/specifications/network",
             enc(service_name)
+        ))
+    }
+
+    fn server_network_interface_controller_addresses(
+        &self,
+        service_name: &str,
+        link_type: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let mut path = format!(
+            "/dedicated/server/{}/networkInterfaceController",
+            enc(service_name)
+        );
+        if let Some(link_type) = link_type {
+            path.push_str(&format!("?linkType={}", enc(link_type)));
+        }
+        self.get(&path)
+    }
+
+    fn server_network_interface_controller(
+        &self,
+        service_name: &str,
+        mac: &str,
+    ) -> Result<NetworkInterfaceController> {
+        self.get(&format!(
+            "/dedicated/server/{}/networkInterfaceController/{}",
+            enc(service_name),
+            enc(mac)
         ))
     }
 
@@ -550,6 +591,17 @@ struct VirtualNetworkInterface {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct NetworkInterfaceController {
+    #[serde(default)]
+    link_type: Option<String>,
+    #[serde(default)]
+    mac: Option<String>,
+    #[serde(default)]
+    virtual_network_interface: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HardwareSpecs {
     #[serde(default)]
     description: Option<String>,
@@ -779,6 +831,7 @@ struct ServerRow {
     details: Option<ServerDetails>,
     hardware: Option<HardwareSpecs>,
     network: Option<NetworkSpecs>,
+    network_interface_controllers: Vec<NetworkInterfaceController>,
     virtual_network_interfaces: Vec<VirtualNetworkInterface>,
     virtual_macs: Vec<VirtualMac>,
     load_errors: Vec<String>,
@@ -832,6 +885,11 @@ impl ServerRow {
                 self.virtual_network_interfaces
                     .iter()
                     .flat_map(|vni| vni.nics.iter().cloned()),
+            )
+            .chain(
+                self.network_interface_controllers
+                    .iter()
+                    .filter_map(|controller| controller.mac.clone()),
             )
             .chain(
                 self.virtual_macs
@@ -917,6 +975,16 @@ impl ServerRow {
         for vni in &self.virtual_network_interfaces {
             push_search_owned(&mut values, "vni", vni.summary());
             push_search_owned(&mut values, "mac", vni.mac_summary());
+        }
+        for controller in &self.network_interface_controllers {
+            push_search_owned(&mut values, "nic", controller.summary());
+            push_search_opt(&mut values, "linkType", controller.link_type.as_deref());
+            push_search_opt(&mut values, "mac", controller.mac.as_deref());
+            push_search_opt(
+                &mut values,
+                "vni",
+                controller.virtual_network_interface.as_deref(),
+            );
         }
         for virtual_mac in &self.virtual_macs {
             push_search_owned(&mut values, "vmac", virtual_mac.summary());
@@ -1246,7 +1314,42 @@ impl TrafficSpecs {
     }
 }
 
+impl NetworkInterfaceController {
+    fn summary(&self) -> Option<String> {
+        self.summary_with_vni_label(None)
+    }
+
+    fn summary_with_vni_label(&self, vni_label: Option<String>) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(mac) = self.mac.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(mac.to_string());
+        }
+        if let Some(link_type) = self.link_type.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(link_type.to_string());
+        }
+        if let Some(vni_label) = vni_label {
+            parts.push(vni_label);
+        } else if let Some(uuid) = self
+            .virtual_network_interface
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(format!("VNI {uuid}"));
+        }
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+}
+
 impl VirtualNetworkInterface {
+    fn label(&self) -> Option<String> {
+        self.name
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .or_else(|| self.mode.as_deref().filter(|value| !value.is_empty()))
+            .or_else(|| self.uuid.as_deref().filter(|value| !value.is_empty()))
+            .map(|value| value.to_string())
+    }
+
     fn summary(&self) -> Option<String> {
         let mut parts = Vec::new();
         if let Some(name) = self.name.as_deref().filter(|value| !value.is_empty()) {
@@ -1307,6 +1410,7 @@ fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
             details: None,
             hardware: None,
             network: None,
+            network_interface_controllers: Vec::new(),
             virtual_network_interfaces: Vec::new(),
             virtual_macs: Vec::new(),
             load_errors: Vec::new(),
@@ -1327,6 +1431,7 @@ fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
             row.details = specs.details;
             row.hardware = specs.hardware;
             row.network = specs.network;
+            row.network_interface_controllers = specs.network_interface_controllers;
             row.virtual_network_interfaces = specs.virtual_network_interfaces;
             row.virtual_macs = specs.virtual_macs;
             row.load_errors = specs.errors;
@@ -1341,6 +1446,7 @@ struct ServerSpecsLoad {
     details: Option<ServerDetails>,
     hardware: Option<HardwareSpecs>,
     network: Option<NetworkSpecs>,
+    network_interface_controllers: Vec<NetworkInterfaceController>,
     virtual_network_interfaces: Vec<VirtualNetworkInterface>,
     virtual_macs: Vec<VirtualMac>,
     errors: Vec<String>,
@@ -1365,6 +1471,7 @@ fn load_server_specs(client: &OvhClient, service_name: &str) -> ServerSpecsLoad 
     }
 
     load_virtual_network_interfaces(client, service_name, &mut specs);
+    load_network_interface_controllers(client, service_name, &mut specs);
     load_virtual_macs(client, service_name, &mut specs);
 
     specs
@@ -1395,6 +1502,67 @@ fn load_virtual_network_interfaces(
                 .push(format!("virtualNetworkInterface/{uuid}: {error:#}")),
         }
     }
+}
+
+fn load_network_interface_controllers(
+    client: &OvhClient,
+    service_name: &str,
+    specs: &mut ServerSpecsLoad,
+) {
+    let mut mac_addresses = Vec::new();
+    let mut saw_success = false;
+    let mut list_errors = Vec::new();
+
+    match client.server_network_interface_controller_addresses(service_name, None) {
+        Ok(addresses) => {
+            saw_success = true;
+            mac_addresses.extend(addresses);
+        }
+        Err(error) if is_not_found_error(&format!("{error:#}")) => {}
+        Err(error) => list_errors.push(format!("networkInterfaceController: {error:#}")),
+    }
+
+    for link_type in NETWORK_INTERFACE_CONTROLLER_LINK_TYPES {
+        match client.server_network_interface_controller_addresses(service_name, Some(link_type)) {
+            Ok(addresses) => {
+                saw_success = true;
+                mac_addresses.extend(addresses);
+            }
+            Err(error) if is_not_found_error(&format!("{error:#}")) => {}
+            Err(error) => list_errors.push(format!(
+                "networkInterfaceController?linkType={link_type}: {error:#}"
+            )),
+        }
+    }
+
+    mac_addresses.sort();
+    mac_addresses.dedup();
+
+    if !saw_success {
+        specs.errors.extend(list_errors);
+        return;
+    }
+
+    for mac in mac_addresses {
+        match client.server_network_interface_controller(service_name, &mac) {
+            Ok(mut controller) => {
+                if controller.mac.is_none() {
+                    controller.mac = Some(mac);
+                }
+                specs.network_interface_controllers.push(controller);
+            }
+            Err(error) if is_not_found_error(&format!("{error:#}")) => {}
+            Err(error) => specs
+                .errors
+                .push(format!("networkInterfaceController/{mac}: {error:#}")),
+        }
+    }
+
+    specs.network_interface_controllers.sort_by(|left, right| {
+        left.link_type
+            .cmp(&right.link_type)
+            .then_with(|| left.mac.cmp(&right.mac))
+    });
 }
 
 fn load_virtual_macs(client: &OvhClient, service_name: &str, specs: &mut ServerSpecsLoad) {
@@ -1577,6 +1745,8 @@ struct App {
     filter_mode: bool,
     filter: String,
     visible_server_rows: usize,
+    visible_detail_rows: usize,
+    visible_detail_width: usize,
 }
 
 enum AppEvent {
@@ -1616,6 +1786,8 @@ impl App {
             filter_mode: false,
             filter: String::new(),
             visible_server_rows: 8,
+            visible_detail_rows: 8,
+            visible_detail_width: 80,
         }
     }
 
@@ -1674,8 +1846,26 @@ impl App {
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Char('R') => self.restart_selected(),
             KeyCode::Char('i') | KeyCode::Char('K') => self.open_ipmi(),
+            KeyCode::Char('j') | KeyCode::Down if self.focus == Focus::Details => {
+                self.scroll_detail_down_by(1)
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.focus == Focus::Details => {
+                self.scroll_detail_up_by(1)
+            }
             KeyCode::Char('j') | KeyCode::Down => self.next(),
             KeyCode::Char('k') | KeyCode::Up => self.previous(),
+            KeyCode::Char('d')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.focus == Focus::Details =>
+            {
+                self.scroll_detail_down_by(self.detail_page_size())
+            }
+            KeyCode::Char('u')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.focus == Focus::Details =>
+            {
+                self.scroll_detail_up_by(self.detail_page_size())
+            }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => self.next_page(),
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.previous_page()
@@ -1689,9 +1879,10 @@ impl App {
                 }
             }
             KeyCode::Char('G') => self.last(),
-            KeyCode::PageDown => self.detail_scroll = self.detail_scroll.saturating_add(8),
-            KeyCode::PageUp => self.detail_scroll = self.detail_scroll.saturating_sub(8),
+            KeyCode::PageDown => self.scroll_detail_down_by(self.detail_page_size()),
+            KeyCode::PageUp => self.scroll_detail_up_by(self.detail_page_size()),
             KeyCode::Home => self.detail_scroll = 0,
+            KeyCode::End => self.detail_scroll = self.max_detail_scroll(),
             KeyCode::Tab | KeyCode::Enter => {
                 self.focus = match self.focus {
                     Focus::Servers => Focus::Details,
@@ -1909,6 +2100,28 @@ impl App {
         (self.visible_server_rows / 2).max(1)
     }
 
+    fn detail_page_size(&self) -> usize {
+        self.visible_detail_rows.saturating_sub(1).max(1)
+    }
+
+    fn scroll_detail_down_by(&mut self, amount: usize) {
+        let next = usize::from(self.detail_scroll).saturating_add(amount);
+        self.detail_scroll = next.min(usize::from(self.max_detail_scroll())) as u16;
+    }
+
+    fn scroll_detail_up_by(&mut self, amount: usize) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(amount as u16);
+    }
+
+    fn max_detail_scroll(&self) -> u16 {
+        let lines = self
+            .selected_server()
+            .map(detail_lines)
+            .unwrap_or_else(|| vec![Line::raw("No server loaded")]);
+        let total_rows = wrapped_line_count(&lines, self.visible_detail_width);
+        max_scroll(total_rows, self.visible_detail_rows)
+    }
+
     fn select_server(&mut self, selected: usize) {
         self.selected = selected;
         self.table_state.select(Some(self.selected));
@@ -1942,7 +2155,7 @@ impl App {
             ),
             Span::raw("  "),
             Span::raw(
-                "/ filter fields  r refresh  j/k move  ctrl-d/u page  gg/G jump  tab focus  i/K KVM  R restart  q quit",
+                "/ filter  r refresh  j/k move/scroll  PgUp/PgDn details  ctrl-d/u page  gg/G jump  tab focus  i/K KVM  R restart  q quit",
             ),
         ]);
         frame.render_widget(
@@ -2024,21 +2237,46 @@ impl App {
         frame.render_stateful_widget(table, area, &mut self.table_state);
     }
 
-    fn draw_details(&self, frame: &mut Frame, area: Rect) {
-        let title = if self.focus == Focus::Details {
-            " Details "
-        } else {
-            " Details"
-        };
+    fn draw_details(&mut self, frame: &mut Frame, area: Rect) {
+        self.visible_detail_rows = usize::from(area.height.saturating_sub(2)).max(1);
+        self.visible_detail_width = usize::from(area.width.saturating_sub(2)).max(1);
+
         let lines = self
             .selected_server()
             .map(detail_lines)
             .unwrap_or_else(|| vec![Line::raw("No server loaded")]);
+        let total_rows = wrapped_line_count(&lines, self.visible_detail_width);
+        let max_scroll = max_scroll(total_rows, self.visible_detail_rows);
+        self.detail_scroll = self.detail_scroll.min(max_scroll);
+
+        let title = detail_title(
+            self.focus == Focus::Details,
+            usize::from(self.detail_scroll),
+            self.visible_detail_rows,
+            total_rows,
+        );
         let details = Paragraph::new(lines)
             .block(Block::default().title(title).borders(Borders::ALL))
             .wrap(Wrap { trim: false })
             .scroll((self.detail_scroll, 0));
         frame.render_widget(details, area);
+
+        if total_rows > self.visible_detail_rows {
+            let mut scrollbar_state = ScrollbarState::new(total_rows)
+                .position(usize::from(self.detail_scroll))
+                .viewport_content_length(self.visible_detail_rows);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_symbol("#")
+                .track_symbol(Some("|"))
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(Color::Cyan));
+            frame.render_stateful_widget(
+                scrollbar,
+                area.inner(Margin::new(0, 1)),
+                &mut scrollbar_state,
+            );
+        }
     }
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
@@ -2139,6 +2377,7 @@ fn detail_lines(server: &ServerRow) -> Vec<Line<'static>> {
     }
 
     if server.network.is_some()
+        || !server.network_interface_controllers.is_empty()
         || !server.virtual_network_interfaces.is_empty()
         || !server.virtual_macs.is_empty()
         || server.details.as_ref().is_some_and(has_network_interfaces)
@@ -2146,6 +2385,7 @@ fn detail_lines(server: &ServerRow) -> Vec<Line<'static>> {
         push_network_lines(
             &mut lines,
             server.network.as_ref(),
+            &server.network_interface_controllers,
             &server.virtual_network_interfaces,
             &server.virtual_macs,
             server.details.as_ref(),
@@ -2208,6 +2448,7 @@ fn push_hardware_lines(lines: &mut Vec<Line<'static>>, hardware: &HardwareSpecs)
 fn push_network_lines(
     lines: &mut Vec<Line<'static>>,
     network: Option<&NetworkSpecs>,
+    network_interface_controllers: &[NetworkInterfaceController],
     virtual_network_interfaces: &[VirtualNetworkInterface],
     virtual_macs: &[VirtualMac],
     details: Option<&ServerDetails>,
@@ -2271,6 +2512,18 @@ fn push_network_lines(
         }
     }
 
+    for (index, controller) in network_interface_controllers.iter().enumerate() {
+        let vni_label = controller
+            .virtual_network_interface
+            .as_deref()
+            .and_then(|uuid| vni_label_for_uuid(uuid, virtual_network_interfaces, details));
+        push_opt_owned(
+            lines,
+            &format!("nic{}", index + 1),
+            controller.summary_with_vni_label(vni_label),
+        );
+    }
+
     for (index, vni) in virtual_network_interfaces.iter().enumerate() {
         push_opt_owned(lines, &format!("vni{}", index + 1), vni.summary());
         push_opt_owned(lines, &format!("vni{}MACs", index + 1), vni.mac_summary());
@@ -2287,6 +2540,19 @@ fn push_network_lines(
     if let Some(details) = details {
         push_virtual_network_interfaces(lines, details);
     }
+}
+
+fn vni_label_for_uuid(
+    uuid: &str,
+    virtual_network_interfaces: &[VirtualNetworkInterface],
+    details: Option<&ServerDetails>,
+) -> Option<String> {
+    virtual_network_interfaces
+        .iter()
+        .chain(details.into_iter().flat_map(|details| details.vnis.iter()))
+        .find(|vni| vni.uuid.as_deref() == Some(uuid))
+        .and_then(VirtualNetworkInterface::label)
+        .map(|label| format!("VNI {label}"))
 }
 
 fn push_virtual_network_interfaces(lines: &mut Vec<Line<'static>>, details: &ServerDetails) {
@@ -2397,6 +2663,31 @@ fn has_network_interfaces(details: &ServerDetails) -> bool {
         || !details.enabled_public_vnis.is_empty()
         || !details.enabled_vrack_vnis.is_empty()
         || !details.enabled_vrack_aggregation_vnis.is_empty()
+}
+
+fn detail_title(focused: bool, scroll: usize, viewport_rows: usize, total_rows: usize) -> String {
+    let focus_padding = if focused { " " } else { "" };
+    if total_rows <= viewport_rows {
+        format!(" Details{focus_padding}")
+    } else {
+        let start = scroll.saturating_add(1).min(total_rows);
+        let end = scroll.saturating_add(viewport_rows).min(total_rows);
+        format!(" Details {start}-{end}/{total_rows} PgUp/PgDn{focus_padding}")
+    }
+}
+
+fn wrapped_line_count(lines: &[Line<'_>], width: usize) -> usize {
+    let width = width.max(1);
+    lines
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(width))
+        .sum()
+}
+
+fn max_scroll(total_rows: usize, viewport_rows: usize) -> u16 {
+    total_rows
+        .saturating_sub(viewport_rows)
+        .min(usize::from(u16::MAX)) as u16
 }
 
 fn format_quantity(quantity: &Quantity) -> Option<String> {
@@ -2531,6 +2822,7 @@ mod tests {
             details: None,
             hardware: Some(hardware),
             network: None,
+            network_interface_controllers: Vec::new(),
             virtual_network_interfaces: Vec::new(),
             virtual_macs: Vec::new(),
             load_errors: Vec::new(),
@@ -2572,6 +2864,18 @@ mod tests {
             details: Some(details),
             hardware: None,
             network: None,
+            network_interface_controllers: vec![
+                NetworkInterfaceController {
+                    link_type: Some("public_lag".to_string()),
+                    mac: Some("aa:bb:cc:dd:ee:01".to_string()),
+                    virtual_network_interface: Some("vni-123".to_string()),
+                },
+                NetworkInterfaceController {
+                    link_type: Some("private_lag".to_string()),
+                    mac: Some("aa:bb:cc:dd:ee:04".to_string()),
+                    virtual_network_interface: Some("vni-456".to_string()),
+                },
+            ],
             virtual_network_interfaces: vec![VirtualNetworkInterface {
                 enabled: Some(true),
                 mode: Some("vrack".to_string()),
@@ -2604,6 +2908,7 @@ mod tests {
         assert!(row.matches_filter("serverId:1033516"));
         assert!(row.matches_filter("zone:bhs-a"));
         assert!(row.matches_filter("aa:bb:cc:dd:ee:04"));
+        assert!(row.matches_filter("linkType:private_lag"));
         assert!(row.matches_filter("vmac:02:00:00:00:00:01"));
         assert!(row.matches_filter("bhs1 public"));
     }
