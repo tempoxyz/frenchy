@@ -36,6 +36,19 @@ export OVH_IPMI_TTL=15
 The consumer key needs read access to dedicated server routes and write access
 for IPMI session creation and restarts:
 
+Use this link to create a US OVHcloud API token with the required rights:
+
+```text
+https://api.us.ovhcloud.com/createToken/index.cgi?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2Fnetworking&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
+```
+
+If OVH returns `Invalid account/password`, make sure you are using the API
+region that owns the account. For OVH US sub-users, use:
+
+```text
+https://us.ovhcloud.com/auth/api/createToken
+```
+
 ```text
 GET  /dedicated/server
 GET  /dedicated/server/*
