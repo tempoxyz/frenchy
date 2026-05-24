@@ -103,18 +103,21 @@ Optional config values:
 
 Create a consumer key from the OVH API console with read access to:
 
-  https://api.us.ovhcloud.com/createToken/index.cgi?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2Fnetworking&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
+  https://api.us.ovhcloud.com/createToken/index.cgi?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac%2F%2A&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
 
 If OVH returns Invalid account/password, make sure you are using the API
 region that owns the account. For OVH US sub-users, use:
 
-  https://us.ovhcloud.com/auth/api/createToken?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2Fnetworking&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
+  https://us.ovhcloud.com/auth/api/createToken?GET=%2Fdedicated%2Fserver&GET=%2Fdedicated%2Fserver%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fhardware&GET=%2Fdedicated%2Fserver%2F%2A%2Fspecifications%2Fnetwork&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualNetworkInterface%2F%2A&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac&GET=%2Fdedicated%2Fserver%2F%2A%2FvirtualMac%2F%2A&POST=%2Fdedicated%2Fserver%2F%2A%2Ffeatures%2Fipmi%2Faccess&POST=%2Fdedicated%2Fserver%2F%2A%2Freboot
 
   GET /dedicated/server
   GET /dedicated/server/*
   GET /dedicated/server/*/specifications/hardware
   GET /dedicated/server/*/specifications/network
-  GET /dedicated/server/*/networking
+  GET /dedicated/server/*/virtualNetworkInterface
+  GET /dedicated/server/*/virtualNetworkInterface/*
+  GET /dedicated/server/*/virtualMac
+  GET /dedicated/server/*/virtualMac/*
 
 and write access to request IPMI sessions and restart servers:
 
@@ -204,10 +207,37 @@ impl OvhClient {
         ))
     }
 
-    fn server_networking(&self, service_name: &str) -> Result<ServerNetworking> {
+    fn server_virtual_network_interface_ids(&self, service_name: &str) -> Result<Vec<String>> {
         self.get(&format!(
-            "/dedicated/server/{}/networking",
+            "/dedicated/server/{}/virtualNetworkInterface",
             enc(service_name)
+        ))
+    }
+
+    fn server_virtual_network_interface(
+        &self,
+        service_name: &str,
+        uuid: &str,
+    ) -> Result<VirtualNetworkInterface> {
+        self.get(&format!(
+            "/dedicated/server/{}/virtualNetworkInterface/{}",
+            enc(service_name),
+            enc(uuid)
+        ))
+    }
+
+    fn server_virtual_mac_addresses(&self, service_name: &str) -> Result<Vec<String>> {
+        self.get(&format!(
+            "/dedicated/server/{}/virtualMac",
+            enc(service_name)
+        ))
+    }
+
+    fn server_virtual_mac(&self, service_name: &str, mac_address: &str) -> Result<VirtualMac> {
+        self.get(&format!(
+            "/dedicated/server/{}/virtualMac/{}",
+            enc(service_name),
+            enc(mac_address)
         ))
     }
 
@@ -717,22 +747,11 @@ struct VrackSpecs {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ServerNetworking {
+struct VirtualMac {
     #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    interfaces: Vec<NetworkInterfaceGroup>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NetworkInterfaceGroup {
+    mac_address: Option<String>,
     #[serde(default, rename = "type")]
-    interface_type: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_string_vec")]
-    macs: Vec<String>,
+    mac_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -760,7 +779,8 @@ struct ServerRow {
     details: Option<ServerDetails>,
     hardware: Option<HardwareSpecs>,
     network: Option<NetworkSpecs>,
-    networking: Option<ServerNetworking>,
+    virtual_network_interfaces: Vec<VirtualNetworkInterface>,
+    virtual_macs: Vec<VirtualMac>,
     load_errors: Vec<String>,
     last_error: Option<String>,
 }
@@ -809,11 +829,14 @@ impl ServerRow {
             .flat_map(|details| details.vnis.iter())
             .flat_map(|vni| vni.nics.iter().cloned())
             .chain(
-                self.networking
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|networking| networking.interfaces.iter())
-                    .flat_map(|interface| interface.macs.iter().cloned()),
+                self.virtual_network_interfaces
+                    .iter()
+                    .flat_map(|vni| vni.nics.iter().cloned()),
+            )
+            .chain(
+                self.virtual_macs
+                    .iter()
+                    .filter_map(|mac| mac.mac_address.clone()),
             )
             .collect::<Vec<_>>();
         macs.sort();
@@ -822,12 +845,22 @@ impl ServerRow {
     }
 
     fn interface_summary(&self) -> Option<String> {
-        let networking = self.networking.as_ref()?;
+        let details_vnis = self
+            .details
+            .as_ref()
+            .into_iter()
+            .flat_map(|details| details.vnis.iter());
         join_non_empty(
-            networking
-                .interfaces
-                .iter()
-                .filter_map(NetworkInterfaceGroup::summary),
+            details_vnis
+                .chain(self.virtual_network_interfaces.iter())
+                .filter_map(VirtualNetworkInterface::summary),
+            ", ",
+        )
+    }
+
+    fn virtual_mac_summary(&self) -> Option<String> {
+        join_non_empty(
+            self.virtual_macs.iter().filter_map(VirtualMac::summary),
             ", ",
         )
     }
@@ -850,6 +883,7 @@ impl ServerRow {
         push_search_owned(&mut values, "hardware", Some(self.hardware_summary()));
         push_search_owned(&mut values, "mac", self.mac_summary());
         push_search_owned(&mut values, "interface", self.interface_summary());
+        push_search_owned(&mut values, "vmac", self.virtual_mac_summary());
 
         if let Some(details) = &self.details {
             if let Some(iam) = &details.iam {
@@ -880,6 +914,15 @@ impl ServerRow {
             }
         }
 
+        for vni in &self.virtual_network_interfaces {
+            push_search_owned(&mut values, "vni", vni.summary());
+            push_search_owned(&mut values, "mac", vni.mac_summary());
+        }
+        for virtual_mac in &self.virtual_macs {
+            push_search_owned(&mut values, "vmac", virtual_mac.summary());
+            push_search_owned(&mut values, "mac", virtual_mac.mac_address.clone());
+        }
+
         if let Some(hardware) = &self.hardware {
             push_search_opt(&mut values, "description", hardware.description.as_deref());
             push_search_owned(&mut values, "cpu", hardware.cpu_label());
@@ -904,15 +947,6 @@ impl ServerRow {
                     "ipv6",
                     routing.ipv6.as_ref().and_then(RouteSpecs::summary),
                 );
-            }
-        }
-
-        if let Some(networking) = &self.networking {
-            push_search_opt(&mut values, "networking", networking.status.as_deref());
-            push_search_opt(&mut values, "networking", networking.description.as_deref());
-            for interface in &networking.interfaces {
-                push_search_owned(&mut values, "interface", interface.summary());
-                push_search_owned(&mut values, "mac", interface.mac_summary());
             }
         }
 
@@ -1247,34 +1281,20 @@ impl VirtualNetworkInterface {
     }
 }
 
-impl ServerNetworking {
-    fn has_interfaces(&self) -> bool {
-        !self.interfaces.is_empty()
-    }
-}
-
-impl NetworkInterfaceGroup {
+impl VirtualMac {
     fn summary(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if let Some(interface_type) = self
-            .interface_type
+        if let Some(mac_address) = self
+            .mac_address
             .as_deref()
             .filter(|value| !value.is_empty())
         {
-            parts.push(interface_type.to_string());
+            parts.push(mac_address.to_string());
         }
-        if !self.macs.is_empty() {
-            parts.push(format!(
-                "{}: {}",
-                plural(self.macs.len() as u64, "MAC"),
-                self.macs.join(", ")
-            ));
+        if let Some(mac_type) = self.mac_type.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(mac_type.to_string());
         }
         (!parts.is_empty()).then(|| parts.join(" "))
-    }
-
-    fn mac_summary(&self) -> Option<String> {
-        join_non_empty(self.macs.iter().cloned(), ", ")
     }
 }
 
@@ -1287,7 +1307,8 @@ fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
             details: None,
             hardware: None,
             network: None,
-            networking: None,
+            virtual_network_interfaces: Vec::new(),
+            virtual_macs: Vec::new(),
             load_errors: Vec::new(),
             last_error: None,
         })
@@ -1306,7 +1327,8 @@ fn load_servers(client: &OvhClient) -> Result<Vec<ServerRow>> {
             row.details = specs.details;
             row.hardware = specs.hardware;
             row.network = specs.network;
-            row.networking = specs.networking;
+            row.virtual_network_interfaces = specs.virtual_network_interfaces;
+            row.virtual_macs = specs.virtual_macs;
             row.load_errors = specs.errors;
         }
     }
@@ -1319,7 +1341,8 @@ struct ServerSpecsLoad {
     details: Option<ServerDetails>,
     hardware: Option<HardwareSpecs>,
     network: Option<NetworkSpecs>,
-    networking: Option<ServerNetworking>,
+    virtual_network_interfaces: Vec<VirtualNetworkInterface>,
+    virtual_macs: Vec<VirtualMac>,
     errors: Vec<String>,
 }
 
@@ -1341,12 +1364,63 @@ fn load_server_specs(client: &OvhClient, service_name: &str) -> ServerSpecsLoad 
         Err(error) => specs.errors.push(format!("network: {error:#}")),
     }
 
-    match client.server_networking(service_name) {
-        Ok(networking) => specs.networking = Some(networking),
-        Err(error) => specs.errors.push(format!("networking: {error:#}")),
-    }
+    load_virtual_network_interfaces(client, service_name, &mut specs);
+    load_virtual_macs(client, service_name, &mut specs);
 
     specs
+}
+
+fn load_virtual_network_interfaces(
+    client: &OvhClient,
+    service_name: &str,
+    specs: &mut ServerSpecsLoad,
+) {
+    let ids = match client.server_virtual_network_interface_ids(service_name) {
+        Ok(ids) => ids,
+        Err(error) if is_not_found_error(&format!("{error:#}")) => return,
+        Err(error) => {
+            specs
+                .errors
+                .push(format!("virtualNetworkInterface: {error:#}"));
+            return;
+        }
+    };
+
+    for uuid in ids {
+        match client.server_virtual_network_interface(service_name, &uuid) {
+            Ok(vni) => specs.virtual_network_interfaces.push(vni),
+            Err(error) if is_not_found_error(&format!("{error:#}")) => {}
+            Err(error) => specs
+                .errors
+                .push(format!("virtualNetworkInterface/{uuid}: {error:#}")),
+        }
+    }
+}
+
+fn load_virtual_macs(client: &OvhClient, service_name: &str, specs: &mut ServerSpecsLoad) {
+    let mac_addresses = match client.server_virtual_mac_addresses(service_name) {
+        Ok(mac_addresses) => mac_addresses,
+        Err(error) if is_not_found_error(&format!("{error:#}")) => return,
+        Err(error) => {
+            specs.errors.push(format!("virtualMac: {error:#}"));
+            return;
+        }
+    };
+
+    for mac_address in mac_addresses {
+        match client.server_virtual_mac(service_name, &mac_address) {
+            Ok(mut virtual_mac) => {
+                if virtual_mac.mac_address.is_none() {
+                    virtual_mac.mac_address = Some(mac_address);
+                }
+                specs.virtual_macs.push(virtual_mac);
+            }
+            Err(error) if is_not_found_error(&format!("{error:#}")) => {}
+            Err(error) => specs
+                .errors
+                .push(format!("virtualMac/{mac_address}: {error:#}")),
+        }
+    }
 }
 
 fn load_server_specs_parallel(
@@ -1464,6 +1538,10 @@ fn is_ipmi_in_progress_error(message: &str) -> bool {
         && message
             .to_ascii_lowercase()
             .contains("ipmi interface request access is in progress")
+}
+
+fn is_not_found_error(message: &str) -> bool {
+    message.contains("HTTP 404") || message.contains("404 Not Found") || message.contains("404 ")
 }
 
 fn restart_server(client: OvhClient, service_name: String) -> Result<String> {
@@ -2061,16 +2139,15 @@ fn detail_lines(server: &ServerRow) -> Vec<Line<'static>> {
     }
 
     if server.network.is_some()
-        || server
-            .networking
-            .as_ref()
-            .is_some_and(ServerNetworking::has_interfaces)
+        || !server.virtual_network_interfaces.is_empty()
+        || !server.virtual_macs.is_empty()
         || server.details.as_ref().is_some_and(has_network_interfaces)
     {
         push_network_lines(
             &mut lines,
             server.network.as_ref(),
-            server.networking.as_ref(),
+            &server.virtual_network_interfaces,
+            &server.virtual_macs,
             server.details.as_ref(),
         );
     }
@@ -2131,7 +2208,8 @@ fn push_hardware_lines(lines: &mut Vec<Line<'static>>, hardware: &HardwareSpecs)
 fn push_network_lines(
     lines: &mut Vec<Line<'static>>,
     network: Option<&NetworkSpecs>,
-    networking: Option<&ServerNetworking>,
+    virtual_network_interfaces: &[VirtualNetworkInterface],
+    virtual_macs: &[VirtualMac],
     details: Option<&ServerDetails>,
 ) {
     push_section(lines, "Network");
@@ -2193,16 +2271,17 @@ fn push_network_lines(
         }
     }
 
-    if let Some(networking) = networking {
-        push_opt(lines, "nicStatus", networking.status.as_deref());
-        push_opt(lines, "nicDesc", networking.description.as_deref());
-        for (index, interface) in networking.interfaces.iter().enumerate() {
-            push_opt_owned(
-                lines,
-                &format!("nicGroup{}", index + 1),
-                interface.summary(),
-            );
-        }
+    for (index, vni) in virtual_network_interfaces.iter().enumerate() {
+        push_opt_owned(lines, &format!("vni{}", index + 1), vni.summary());
+        push_opt_owned(lines, &format!("vni{}MACs", index + 1), vni.mac_summary());
+    }
+
+    for (index, virtual_mac) in virtual_macs.iter().enumerate() {
+        push_opt_owned(
+            lines,
+            &format!("virtualMac{}", index + 1),
+            virtual_mac.summary(),
+        );
     }
 
     if let Some(details) = details {
@@ -2452,7 +2531,8 @@ mod tests {
             details: None,
             hardware: Some(hardware),
             network: None,
-            networking: None,
+            virtual_network_interfaces: Vec::new(),
+            virtual_macs: Vec::new(),
             load_errors: Vec::new(),
             last_error: None,
         };
@@ -2492,17 +2572,22 @@ mod tests {
             details: Some(details),
             hardware: None,
             network: None,
-            networking: Some(ServerNetworking {
-                status: Some("active".to_string()),
-                description: None,
-                interfaces: vec![NetworkInterfaceGroup {
-                    interface_type: Some("public".to_string()),
-                    macs: vec![
-                        "aa:bb:cc:dd:ee:03".to_string(),
-                        "aa:bb:cc:dd:ee:04".to_string(),
-                    ],
-                }],
-            }),
+            virtual_network_interfaces: vec![VirtualNetworkInterface {
+                enabled: Some(true),
+                mode: Some("vrack".to_string()),
+                name: Some("private".to_string()),
+                server_name: Some("compute-a".to_string()),
+                uuid: Some("vni-456".to_string()),
+                vrack: Some("pn-123".to_string()),
+                nics: vec![
+                    "aa:bb:cc:dd:ee:03".to_string(),
+                    "aa:bb:cc:dd:ee:04".to_string(),
+                ],
+            }],
+            virtual_macs: vec![VirtualMac {
+                mac_address: Some("02:00:00:00:00:01".to_string()),
+                mac_type: Some("ovh".to_string()),
+            }],
             load_errors: Vec::new(),
             last_error: None,
         };
@@ -2511,7 +2596,7 @@ mod tests {
         assert_eq!(
             row.mac_summary(),
             Some(
-                "aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02, aa:bb:cc:dd:ee:03, aa:bb:cc:dd:ee:04"
+                "02:00:00:00:00:01, aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02, aa:bb:cc:dd:ee:03, aa:bb:cc:dd:ee:04"
                     .to_string()
             )
         );
@@ -2519,6 +2604,7 @@ mod tests {
         assert!(row.matches_filter("serverId:1033516"));
         assert!(row.matches_filter("zone:bhs-a"));
         assert!(row.matches_filter("aa:bb:cc:dd:ee:04"));
+        assert!(row.matches_filter("vmac:02:00:00:00:00:01"));
         assert!(row.matches_filter("bhs1 public"));
     }
 
