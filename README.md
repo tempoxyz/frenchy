@@ -59,13 +59,14 @@ cargo run
 
 The server list includes an at-a-glance hardware summary. Selecting a server
 shows CPU topology, memory, disk groups, RAID details, motherboard, boot mode,
-bandwidth, routing, vRack/vMAC support, and OLA or virtual network interfaces
-when OVH returns them.
+server id, rack, datacenter, region/availability zone, bandwidth, routing,
+vRack/vMAC support, OLA, and virtual network interfaces with their MAC
+addresses when OVH returns them.
 
 ## Keys
 
 ```text
-/             filter by displayed server name
+/             filter by inventory fields
 enter/esc     finish filtering
 backspace     edit filter
 ctrl-u        clear filter while filtering

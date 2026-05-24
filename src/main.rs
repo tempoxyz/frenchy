@@ -23,7 +23,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 use reqwest::blocking::Client;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
@@ -423,13 +423,23 @@ struct ServerDetails {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
+    server_id: Option<Value>,
+    #[serde(default)]
+    boot_id: Option<Value>,
+    #[serde(default)]
     state: Option<String>,
     #[serde(default)]
     reverse: Option<String>,
     #[serde(default)]
     datacenter: Option<String>,
     #[serde(default)]
+    region: Option<String>,
+    #[serde(default)]
+    availability_zone: Option<String>,
+    #[serde(default)]
     ip: Option<String>,
+    #[serde(default)]
+    ips: Option<Value>,
     #[serde(default)]
     os: Option<String>,
     #[serde(default)]
@@ -463,6 +473,10 @@ struct ServerDetails {
 struct ServerIam {
     #[serde(default)]
     display_name: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    urn: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -475,11 +489,18 @@ struct VirtualNetworkInterface {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
+    server_name: Option<String>,
+    #[serde(default)]
     uuid: Option<String>,
     #[serde(default)]
     vrack: Option<String>,
-    #[serde(default)]
-    ncis: Option<Value>,
+    #[serde(
+        default,
+        alias = "ncis",
+        alias = "networkInterfaceController",
+        deserialize_with = "deserialize_string_vec"
+    )]
+    nics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -736,6 +757,102 @@ impl ServerRow {
         ];
         join_non_empty(parts.into_iter().flatten(), " / ").unwrap_or_else(|| "-".to_string())
     }
+
+    fn location_summary(&self) -> String {
+        self.details
+            .as_ref()
+            .and_then(ServerDetails::location_summary)
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    fn mac_summary(&self) -> Option<String> {
+        let details = self.details.as_ref()?;
+        let mut macs = details
+            .vnis
+            .iter()
+            .flat_map(|vni| vni.nics.iter().cloned())
+            .collect::<Vec<_>>();
+        macs.sort();
+        macs.dedup();
+        join_non_empty(macs, ", ")
+    }
+
+    fn matches_filter(&self, query: &str) -> bool {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+
+        let haystack = self.search_text();
+        query.split_whitespace().all(|term| haystack.contains(term))
+    }
+
+    fn search_text(&self) -> String {
+        let mut values = Vec::new();
+        push_search(&mut values, "service", &self.service_name);
+        push_search(&mut values, "display", self.display_name());
+        push_search_owned(&mut values, "location", Some(self.location_summary()));
+        push_search_owned(&mut values, "hardware", Some(self.hardware_summary()));
+        push_search_owned(&mut values, "mac", self.mac_summary());
+
+        if let Some(details) = &self.details {
+            if let Some(iam) = &details.iam {
+                push_search_opt(&mut values, "iam", iam.display_name.as_deref());
+                push_search_opt(&mut values, "iamId", iam.id.as_deref());
+                push_search_opt(&mut values, "urn", iam.urn.as_deref());
+            }
+            push_search_opt(&mut values, "name", details.name.as_deref());
+            push_search_value(&mut values, "serverId", details.server_id.as_ref());
+            push_search_value(&mut values, "bootId", details.boot_id.as_ref());
+            push_search_opt(&mut values, "ip", details.ip.as_deref());
+            push_search_value(&mut values, "ips", details.ips.as_ref());
+            push_search_opt(&mut values, "reverse", details.reverse.as_deref());
+            push_search_opt(&mut values, "datacenter", details.datacenter.as_deref());
+            push_search_opt(&mut values, "dc", details.datacenter.as_deref());
+            push_search_opt(&mut values, "region", details.region.as_deref());
+            push_search_opt(&mut values, "zone", details.availability_zone.as_deref());
+            push_search_opt(&mut values, "rack", details.rack.as_deref());
+            push_search_opt(&mut values, "state", details.state.as_deref());
+            push_search_opt(&mut values, "power", details.power_state.as_deref());
+            push_search_opt(&mut values, "os", details.os.as_deref());
+            push_search_opt(&mut values, "rootDevice", details.root_device.as_deref());
+            push_search_opt(&mut values, "support", details.support_level.as_deref());
+            push_search_opt(&mut values, "range", details.commercial_range.as_deref());
+            for vni in &details.vnis {
+                push_search_owned(&mut values, "vni", vni.summary());
+                push_search_owned(&mut values, "mac", vni.mac_summary());
+            }
+        }
+
+        if let Some(hardware) = &self.hardware {
+            push_search_opt(&mut values, "description", hardware.description.as_deref());
+            push_search_owned(&mut values, "cpu", hardware.cpu_label());
+            push_search_owned(&mut values, "memory", hardware.memory_label());
+            push_search_owned(&mut values, "disk", hardware.disk_summary());
+        }
+
+        if let Some(network) = &self.network {
+            push_search_owned(
+                &mut values,
+                "bandwidth",
+                network.bandwidth.as_ref().and_then(BandwidthSpecs::summary),
+            );
+            if let Some(routing) = &network.routing {
+                push_search_owned(
+                    &mut values,
+                    "ipv4",
+                    routing.ipv4.as_ref().and_then(RouteSpecs::summary),
+                );
+                push_search_owned(
+                    &mut values,
+                    "ipv6",
+                    routing.ipv6.as_ref().and_then(RouteSpecs::summary),
+                );
+            }
+        }
+
+        values.join(" ").to_lowercase()
+    }
 }
 
 impl ServerDetails {
@@ -745,6 +862,21 @@ impl ServerDetails {
             .and_then(|iam| iam.display_name.as_deref())
             .filter(|name| !name.is_empty())
             .or_else(|| self.name.as_deref().filter(|name| !name.is_empty()))
+    }
+
+    fn location_summary(&self) -> Option<String> {
+        join_non_empty(
+            [
+                self.datacenter.clone(),
+                self.rack.clone(),
+                self.availability_zone
+                    .clone()
+                    .or_else(|| self.region.clone()),
+            ]
+            .into_iter()
+            .flatten(),
+            " / ",
+        )
     }
 }
 
@@ -1023,6 +1155,13 @@ impl VirtualNetworkInterface {
         } else if let Some(uuid) = self.uuid.as_deref().filter(|value| !value.is_empty()) {
             parts.push(uuid.to_string());
         }
+        if let Some(server_name) = self
+            .server_name
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            parts.push(format!("server {server_name}"));
+        }
         if let Some(mode) = self.mode.as_deref().filter(|value| !value.is_empty()) {
             parts.push(mode.to_string());
         }
@@ -1032,10 +1171,14 @@ impl VirtualNetworkInterface {
         if let Some(vrack) = self.vrack.as_deref().filter(|value| !value.is_empty()) {
             parts.push(format!("vRack {vrack}"));
         }
-        if let Some(ncis) = self.ncis.as_ref().and_then(format_ncis) {
-            parts.push(ncis);
+        if !self.nics.is_empty() {
+            parts.push(plural(self.nics.len() as u64, "MAC"));
         }
         (!parts.is_empty()).then(|| parts.join(", "))
+    }
+
+    fn mac_summary(&self) -> Option<String> {
+        join_non_empty(self.nics.iter().cloned(), ", ")
     }
 }
 
@@ -1344,7 +1487,7 @@ impl App {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
             KeyCode::Char('/') => {
                 self.filter_mode = true;
-                self.status = "Filtering by name".to_string();
+                self.status = "Filtering by inventory fields".to_string();
             }
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Char('R') => self.restart_selected(),
@@ -1444,15 +1587,12 @@ impl App {
     }
 
     fn apply_filter(&mut self) {
-        let query = self.filter.trim().to_lowercase();
+        let query = self.filter.trim();
         self.filtered_indices = self
             .servers
             .iter()
             .enumerate()
-            .filter_map(|(index, server)| {
-                let name = server.display_name().to_lowercase();
-                (query.is_empty() || name.contains(&query)).then_some(index)
-            })
+            .filter_map(|(index, server)| server.matches_filter(query).then_some(index))
             .collect();
         self.selected = self
             .selected
@@ -1620,7 +1760,7 @@ impl App {
             ),
             Span::raw("  "),
             Span::raw(
-                "/ filter  r refresh  j/k move  ctrl-d/u page  gg/G jump  tab focus  i/K KVM  R restart  q quit",
+                "/ filter fields  r refresh  j/k move  ctrl-d/u page  gg/G jump  tab focus  i/K KVM  R restart  q quit",
             ),
         ]);
         frame.render_widget(
@@ -1647,7 +1787,7 @@ impl App {
             Row::new(vec![
                 Cell::from(server.display_name().to_string()),
                 Cell::from(server.field(|details| details.ip.as_ref())),
-                Cell::from(server.field(|details| details.datacenter.as_ref())),
+                Cell::from(server.location_summary()),
                 Cell::from(server.hardware_summary()),
                 Cell::from(server.field(|details| details.state.as_ref())),
             ])
@@ -1679,14 +1819,14 @@ impl App {
             rows,
             [
                 Constraint::Percentage(28),
-                Constraint::Percentage(22),
-                Constraint::Percentage(10),
-                Constraint::Percentage(30),
+                Constraint::Percentage(20),
+                Constraint::Percentage(18),
+                Constraint::Percentage(24),
                 Constraint::Percentage(10),
             ],
         )
         .header(
-            Row::new(["Name", "IP", "DC", "Hardware", "State"]).style(
+            Row::new(["Name", "IP", "Location", "Hardware", "State"]).style(
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -1763,10 +1903,37 @@ fn detail_lines(server: &ServerRow) -> Vec<Line<'static>> {
                 .as_ref()
                 .and_then(|iam| iam.display_name.as_deref()),
         );
+        push_opt(
+            &mut lines,
+            "iamId",
+            details.iam.as_ref().and_then(|iam| iam.id.as_deref()),
+        );
+        push_opt(
+            &mut lines,
+            "iamUrn",
+            details.iam.as_ref().and_then(|iam| iam.urn.as_deref()),
+        );
         push_opt(&mut lines, "name", details.name.as_deref());
+        push_opt_owned(
+            &mut lines,
+            "serverId",
+            details.server_id.as_ref().and_then(format_value),
+        );
+        push_opt_owned(
+            &mut lines,
+            "bootId",
+            details.boot_id.as_ref().and_then(format_value),
+        );
         push_opt(&mut lines, "ip", details.ip.as_deref());
+        push_opt_owned(
+            &mut lines,
+            "ips",
+            details.ips.as_ref().and_then(format_value),
+        );
         push_opt(&mut lines, "reverse", details.reverse.as_deref());
         push_opt(&mut lines, "datacenter", details.datacenter.as_deref());
+        push_opt(&mut lines, "region", details.region.as_deref());
+        push_opt(&mut lines, "zone", details.availability_zone.as_deref());
         push_opt(&mut lines, "rack", details.rack.as_deref());
         push_opt(&mut lines, "state", details.state.as_deref());
         push_opt(&mut lines, "power", details.power_state.as_deref());
@@ -1918,6 +2085,7 @@ fn push_network_lines(
 fn push_virtual_network_interfaces(lines: &mut Vec<Line<'static>>, details: &ServerDetails) {
     for (index, vni) in details.vnis.iter().enumerate() {
         push_opt_owned(lines, &format!("vni{}", index + 1), vni.summary());
+        push_opt_owned(lines, &format!("vni{}MACs", index + 1), vni.mac_summary());
     }
     if !details.enabled_public_vnis.is_empty() {
         lines.push(kv(
@@ -1991,6 +2159,32 @@ fn push_opt_owned(lines: &mut Vec<Line<'static>>, key: &str, value: Option<Strin
     }
 }
 
+fn push_search(values: &mut Vec<String>, key: &str, value: &str) {
+    let value = value.trim();
+    if value.is_empty() || value == "-" {
+        return;
+    }
+    values.push(value.to_string());
+    values.push(format!("{key}:{value}"));
+    values.push(format!("{key} {value}"));
+}
+
+fn push_search_opt(values: &mut Vec<String>, key: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        push_search(values, key, value);
+    }
+}
+
+fn push_search_owned(values: &mut Vec<String>, key: &str, value: Option<String>) {
+    if let Some(value) = value {
+        push_search(values, key, &value);
+    }
+}
+
+fn push_search_value(values: &mut Vec<String>, key: &str, value: Option<&Value>) {
+    push_search_owned(values, key, value.and_then(format_value));
+}
+
 fn has_network_interfaces(details: &ServerDetails) -> bool {
     !details.vnis.is_empty()
         || !details.enabled_public_vnis.is_empty()
@@ -2039,14 +2233,6 @@ fn format_value(value: &Value) -> Option<String> {
     }
 }
 
-fn format_ncis(value: &Value) -> Option<String> {
-    match value {
-        Value::Array(values) if values.is_empty() => None,
-        Value::Array(values) => Some(plural(values.len() as u64, "NCI")),
-        value => format_value(value).map(|value| format!("NCI {value}")),
-    }
-}
-
 fn value_as_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Number(value) => value.as_f64(),
@@ -2081,6 +2267,28 @@ fn join_non_empty(items: impl IntoIterator<Item = String>, separator: &str) -> O
         .filter(|item| !item.trim().is_empty())
         .collect::<Vec<_>>();
     (!items.is_empty()).then(|| items.join(separator))
+}
+
+fn deserialize_string_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<Value>::deserialize(deserializer)? else {
+        return Ok(Vec::new());
+    };
+    Ok(strings_from_value(value))
+}
+
+fn strings_from_value(value: Value) -> Vec<String> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::String(value) => vec![value],
+        Value::Array(values) => values
+            .into_iter()
+            .filter_map(|value| format_value(&value))
+            .collect(),
+        value => format_value(&value).into_iter().collect(),
+    }
 }
 
 #[cfg(test)]
@@ -2124,6 +2332,51 @@ mod tests {
             row.hardware_summary(),
             "Epyc7302 (16c/32t) / 128 GB / 2x1920 GB NVME"
         );
+    }
+
+    #[test]
+    fn filters_match_location_ids_and_mac_addresses() {
+        let details: ServerDetails = serde_json::from_value(json!({
+            "name": "compute-a",
+            "serverId": 1033516,
+            "datacenter": "bhs1",
+            "region": "ca-east-bhs",
+            "availabilityZone": "bhs-a",
+            "rack": "BHS123A",
+            "ip": "40.160.24.210",
+            "vnis": [
+                {
+                    "enabled": true,
+                    "mode": "public",
+                    "name": "public",
+                    "networkInterfaceController": [
+                        "aa:bb:cc:dd:ee:01",
+                        "aa:bb:cc:dd:ee:02"
+                    ],
+                    "uuid": "vni-123"
+                }
+            ]
+        }))
+        .unwrap();
+        let row = ServerRow {
+            service_name: "ns1033516.ip-40-160-24.us".to_string(),
+            details: Some(details),
+            hardware: None,
+            network: None,
+            load_errors: Vec::new(),
+            last_error: None,
+        };
+
+        assert_eq!(row.location_summary(), "bhs1 / BHS123A / bhs-a");
+        assert_eq!(
+            row.mac_summary(),
+            Some("aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02".to_string())
+        );
+        assert!(row.matches_filter("rack:BHS123A"));
+        assert!(row.matches_filter("serverId:1033516"));
+        assert!(row.matches_filter("zone:bhs-a"));
+        assert!(row.matches_filter("aa:bb:cc:dd:ee:02"));
+        assert!(row.matches_filter("bhs1 public"));
     }
 
     #[test]
