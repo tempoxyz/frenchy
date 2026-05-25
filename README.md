@@ -13,6 +13,8 @@ On first run, frenchy creates:
 Fill it with your OVH API application and consumer key:
 
 ```toml
+onepassword_item = "op://dev-eu/frenchy"
+
 application_key = "..."
 application_secret = "..."
 consumer_key = "..."
@@ -32,6 +34,12 @@ export OVH_ENDPOINT=https://api.us.ovhcloud.com/1.0
 export OVH_IPMI_TYPE=kvmipHtml5URL
 export OVH_IPMI_TTL=15
 ```
+
+If a required value is missing, frenchy reads it from the configured 1Password
+item with `op read`. The default item is `op://dev-eu/frenchy`; override it with
+`FRENCHY_1PASSWORD_ITEM` or `onepassword_item`, or set `onepassword_item = ""`
+to only use local config and environment variables. Individual config values and
+environment variables can also be set directly to `op://` references.
 
 The consumer key needs read access to dedicated server routes and write access
 for IPMI session creation and restarts:
