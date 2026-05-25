@@ -2,6 +2,7 @@ use std::{
     env, fs,
     io::{self, Stdout},
     path::{Path, PathBuf},
+    process::Command as ProcessCommand,
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::{Duration, Instant},
@@ -33,6 +34,7 @@ use sha1::{Digest, Sha1};
 const DEFAULT_ENDPOINT: &str = "https://api.us.ovhcloud.com/1.0";
 const DEFAULT_IPMI_TYPE: &str = "kvmipHtml5URL";
 const DEFAULT_IPMI_TTL: &str = "15";
+const DEFAULT_ONEPASSWORD_ITEM: &str = "op://dev-eu/frenchy";
 const DETAIL_WORKER_POOL_SIZE: usize = 128;
 const NETWORK_INTERFACE_CONTROLLER_LINK_TYPES: [&str; 7] = [
     "isolated",
@@ -45,6 +47,9 @@ const NETWORK_INTERFACE_CONTROLLER_LINK_TYPES: [&str; 7] = [
 ];
 const CONFIG_TEMPLATE: &str = r#"# frenchy config
 # Env vars with the same names override these values.
+# Missing values are read from this 1Password item with `op read`.
+
+onepassword_item = "op://dev-eu/frenchy"
 
 application_key = ""
 application_secret = ""
@@ -101,6 +106,10 @@ Environment variables with the same names override the config file:
   OVH_APPLICATION_SECRET
   OVH_CONSUMER_KEY
 
+Missing values are read from this 1Password item with `op read`:
+
+  FRENCHY_1PASSWORD_ITEM=op://dev-eu/frenchy
+
 Optional:
 
   OVH_ENDPOINT=https://api.us.ovhcloud.com/1.0
@@ -109,6 +118,7 @@ Optional:
 
 Optional config values:
 
+  onepassword_item = "op://dev-eu/frenchy"
   endpoint = "https://api.us.ovhcloud.com/1.0"
   ipmi_type = "kvmipHtml5URL"
   ipmi_ttl = "15"
@@ -396,6 +406,8 @@ struct FileConfig {
     #[serde(default)]
     consumer_key: String,
     #[serde(default)]
+    onepassword_item: Option<String>,
+    #[serde(default)]
     endpoint: Option<String>,
     #[serde(default)]
     ipmi_type: Option<String>,
@@ -416,35 +428,62 @@ struct Config {
 impl Config {
     fn load_or_create() -> Result<Self> {
         let path = config_path()?;
-        if !path.exists() {
+        let text = if path.exists() {
+            fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?
+        } else {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create {}", parent.display()))?;
             }
             fs::write(&path, CONFIG_TEMPLATE)
                 .with_context(|| format!("failed to write {}", path.display()))?;
-            return Err(anyhow!(
-                "created {}; fill in your OVH credentials, then run frenchy again",
-                path.display()
-            ));
-        }
-
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
+            CONFIG_TEMPLATE.to_string()
+        };
         let file: FileConfig =
             toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+        let onepassword_item = configured_onepassword_item(file.onepassword_item);
 
         let config = Self {
-            application_key: setting("OVH_APPLICATION_KEY", file.application_key),
-            application_secret: setting("OVH_APPLICATION_SECRET", file.application_secret),
-            consumer_key: setting("OVH_CONSUMER_KEY", file.consumer_key),
-            endpoint: setting_opt("OVH_ENDPOINT", file.endpoint, DEFAULT_ENDPOINT),
-            ipmi_type: normalize_ipmi_type(&setting_opt(
+            application_key: credential_setting(
+                "OVH_APPLICATION_KEY",
+                file.application_key,
+                onepassword_item.as_deref(),
+                "application_key",
+            )?,
+            application_secret: credential_setting(
+                "OVH_APPLICATION_SECRET",
+                file.application_secret,
+                onepassword_item.as_deref(),
+                "application_secret",
+            )?,
+            consumer_key: credential_setting(
+                "OVH_CONSUMER_KEY",
+                file.consumer_key,
+                onepassword_item.as_deref(),
+                "consumer_key",
+            )?,
+            endpoint: optional_setting(
+                "OVH_ENDPOINT",
+                file.endpoint,
+                DEFAULT_ENDPOINT,
+                onepassword_item.as_deref(),
+                "endpoint",
+            )?,
+            ipmi_type: normalize_ipmi_type(&optional_setting(
                 "OVH_IPMI_TYPE",
                 file.ipmi_type,
                 DEFAULT_IPMI_TYPE,
-            )),
-            ipmi_ttl: setting_opt("OVH_IPMI_TTL", file.ipmi_ttl, DEFAULT_IPMI_TTL),
+                onepassword_item.as_deref(),
+                "ipmi_type",
+            )?),
+            ipmi_ttl: optional_setting(
+                "OVH_IPMI_TTL",
+                file.ipmi_ttl,
+                DEFAULT_IPMI_TTL,
+                onepassword_item.as_deref(),
+                "ipmi_ttl",
+            )?,
         };
 
         config.validate(&path)?;
@@ -478,16 +517,104 @@ fn config_path() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/frenchy/config.toml"))
 }
 
-fn setting(env_name: &str, file_value: String) -> String {
-    env::var(env_name).unwrap_or(file_value)
+fn configured_onepassword_item(file_value: Option<String>) -> Option<String> {
+    if let Ok(value) = env::var("FRENCHY_1PASSWORD_ITEM") {
+        return non_empty(value);
+    }
+
+    match file_value {
+        Some(value) => non_empty(value),
+        None => Some(DEFAULT_ONEPASSWORD_ITEM.to_string()),
+    }
 }
 
-fn setting_opt(env_name: &str, file_value: Option<String>, default: &str) -> String {
+fn credential_setting(
+    env_name: &str,
+    file_value: String,
+    onepassword_item: Option<&str>,
+    field: &str,
+) -> Result<String> {
+    if let Some(value) = setting(env_name, file_value) {
+        return resolve_config_value(value, field);
+    }
+
+    onepassword_item
+        .map(|item| read_onepassword_field(item, field))
+        .unwrap_or_else(|| Ok(String::new()))
+}
+
+fn optional_setting(
+    env_name: &str,
+    file_value: Option<String>,
+    default: &str,
+    onepassword_item: Option<&str>,
+    field: &str,
+) -> Result<String> {
+    if let Some(value) = setting_opt(env_name, file_value) {
+        return resolve_config_value(value, field);
+    }
+
+    if let Some(value) = onepassword_item
+        .and_then(|item| read_onepassword_field(item, field).ok())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(value);
+    }
+
+    Ok(default.to_string())
+}
+
+fn setting(env_name: &str, file_value: String) -> Option<String> {
     env::var(env_name)
         .ok()
-        .or(file_value)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| default.to_string())
+        .and_then(non_empty)
+        .or_else(|| non_empty(file_value))
+}
+
+fn setting_opt(env_name: &str, file_value: Option<String>) -> Option<String> {
+    env::var(env_name)
+        .ok()
+        .and_then(non_empty)
+        .or_else(|| file_value.and_then(non_empty))
+}
+
+fn non_empty(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn resolve_config_value(value: String, field: &str) -> Result<String> {
+    if value.trim_start().starts_with("op://") {
+        read_onepassword_ref(value.trim())
+            .with_context(|| format!("failed to resolve 1Password reference for OVH {field}"))
+    } else {
+        Ok(value)
+    }
+}
+
+fn read_onepassword_field(item: &str, field: &str) -> Result<String> {
+    read_onepassword_ref(&onepassword_field_ref(item, field))
+        .with_context(|| format!("failed to read OVH {field} from 1Password item {item}"))
+}
+
+fn onepassword_field_ref(item: &str, field: &str) -> String {
+    format!("{}/{}", item.trim_end_matches('/'), field)
+}
+
+fn read_onepassword_ref(reference: &str) -> Result<String> {
+    let output = ProcessCommand::new("op")
+        .arg("read")
+        .arg(reference)
+        .output()
+        .with_context(|| "failed to run 1Password CLI `op read`")?;
+
+    if output.status.success() {
+        let value = String::from_utf8(output.stdout)
+            .with_context(|| format!("1Password reference {reference} was not UTF-8"))?;
+        Ok(value.trim_end_matches(['\r', '\n']).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow!("`op read {reference}` failed: {}", stderr.trim()))
+    }
 }
 
 fn normalize_ipmi_type(value: &str) -> String {
@@ -2793,6 +2920,14 @@ fn strings_from_value(value: Value) -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn onepassword_field_ref_handles_trailing_slash() {
+        assert_eq!(
+            onepassword_field_ref("op://dev-eu/frenchy/", "application_key"),
+            "op://dev-eu/frenchy/application_key"
+        );
+    }
 
     #[test]
     fn hardware_summary_includes_cpu_memory_and_disks() {
